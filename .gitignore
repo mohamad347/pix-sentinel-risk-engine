@@ -63,6 +63,9 @@ coverage.xml
 *.swp
 .DS_Store
 
+# --- DocumentaÃ§Ã£o pessoal ----------------------------------
+docs/pessoal/
+
 # --- Ferramentas de IA -------------------------------------
 .claude/
 
