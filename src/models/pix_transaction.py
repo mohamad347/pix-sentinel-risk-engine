@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, CHAR, CheckConstraint, Column, DateTime, String, UniqueConstraint
+from sqlalchemy import BigInteger, CHAR, CheckConstraint, Column, DateTime, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
@@ -28,6 +28,13 @@ class PixTransaction(Base):
     __table_args__ = (
         UniqueConstraint("external_id", name="pix_transactions_external_id_key"),
         CheckConstraint("amount_cents > 0", name="ck_pix_transactions_positive_amount"),
+        Index(
+            "ix_pix_transactions_payer_received_at",
+            "payer_document",
+            "payer_branch",
+            "payer_account_number",
+            "received_at",
+        ),
     )
 
     analysis = relationship("PixAnalysis", back_populates="transaction", uselist=False)

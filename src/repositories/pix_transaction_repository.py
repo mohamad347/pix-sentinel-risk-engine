@@ -1,10 +1,12 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from sqlalchemy import func, text
 from sqlalchemy.orm import contains_eager
 
 from database import Context
 from models import PixAnalysis, PixTransaction
+from utils.pix_history import payer_advisory_lock_key
 
 
 class PixTransactionRepository:
@@ -16,6 +18,64 @@ class PixTransactionRepository:
         self.session.add(transaction)
         self.session.flush()
         return transaction
+
+    def acquire_payer_lock(self, document: str, branch: str, account_number: str) -> None:
+        lock_key = payer_advisory_lock_key(document, branch, account_number)
+        self.session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        )
+
+    def get_database_clock(self) -> datetime:
+        return self.session.execute(text("SELECT clock_timestamp()")).scalar_one()
+
+    def get_payer_history(
+        self,
+        transaction: PixTransaction,
+        windows_minutes: tuple[int, ...],
+    ) -> dict:
+        columns = [
+            func.count(PixTransaction.id)
+            .filter(PixTransaction.id != transaction.id)
+            .label("prior_attempt_count")
+        ]
+        for minutes in windows_minutes:
+            in_window = PixTransaction.received_at > transaction.received_at - timedelta(
+                minutes=minutes
+            )
+            columns.extend(
+                [
+                    func.count(PixTransaction.id)
+                    .filter(in_window)
+                    .label(f"attempt_count_{minutes}m"),
+                    func.coalesce(
+                        func.sum(PixTransaction.amount_cents).filter(in_window),
+                        0,
+                    ).label(f"amount_cents_{minutes}m"),
+                ]
+            )
+
+        row = (
+            self.session.query(*columns)
+            .filter(
+                PixTransaction.payer_document == transaction.payer_document,
+                PixTransaction.payer_branch == transaction.payer_branch,
+                PixTransaction.payer_account_number == transaction.payer_account_number,
+                PixTransaction.received_at <= transaction.received_at,
+            )
+            .one()
+        )
+        values = row._mapping
+        return {
+            "prior_attempt_count": int(values["prior_attempt_count"]),
+            "windows": {
+                minutes: {
+                    "attempt_count": int(values[f"attempt_count_{minutes}m"]),
+                    "amount_cents": int(values[f"amount_cents_{minutes}m"]),
+                }
+                for minutes in windows_minutes
+            },
+        }
 
     def create_analysis(
         self,

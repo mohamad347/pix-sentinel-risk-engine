@@ -34,9 +34,10 @@ requisição HTTP
 O endereço e o verbo são registrados explicitamente em `src/app.py`.
 `PixTransactionResource` valida o POST com `post_pix_transaction.json` e
 encaminha o payload ao `PixTransactionController`. O controller aplica a
-política ativa, usa `PixTransactionRepository` para persistir a tentativa e o
-parecer e confirma a transação com um único commit. O middleware fecha a sessão
-e executa rollback quando uma exceção escapa do fluxo.
+serialização transacional por pagador, usa `PixTransactionRepository` para
+persistir a tentativa e extrair o histórico, aplica a política ativa com essas
+evidências e persiste o parecer. Tudo é confirmado por um único commit. O
+middleware fecha a sessão e executa rollback quando uma exceção escapa do fluxo.
 
 O GET recebe o ID externo do Pix, consulta a análise persistida pelo repository
 e usa `PixAnalysisDTO` para devolver somente `key`, `status` e `metadata`.
@@ -51,6 +52,11 @@ pertence ao controller, pois ele conhece o limite completo da operação.
 Como `SessionLocal` usa `autoflush=False`, o repository chama `flush()` quando
 precisa materializar a chave da tentativa antes de criar a análise. Tentativa e
 análise permanecem na mesma transação.
+
+Novas tentativas da mesma conta pagadora usam `pg_advisory_xact_lock`. O lock é
+transacional e termina no commit ou rollback. Com `READ COMMITTED`, a consulta
+executada depois de adquirir o lock observa o commit da tentativa anterior. O
+`received_at` vem de `clock_timestamp()` após a espera pelo lock.
 
 ## Entrada e saída
 

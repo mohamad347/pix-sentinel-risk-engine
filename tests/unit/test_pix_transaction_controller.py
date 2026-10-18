@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -70,6 +70,21 @@ class FakeRepository:
         self.transaction = None
         self.analysis = None
         self.existing_analysis = None
+        self.admitted_at = datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc)
+        self.history = {
+            "prior_attempt_count": 0,
+            "windows": {
+                5: {"attempt_count": 1, "amount_cents": 150000},
+                60: {"attempt_count": 1, "amount_cents": 150000},
+            },
+        }
+
+    def acquire_payer_lock(self, document, branch, account_number):
+        self.events.append(("acquire_payer_lock", document, branch, account_number))
+
+    def get_database_clock(self):
+        self.events.append("get_database_clock")
+        return self.admitted_at
 
     def create_transaction(self, **data):
         self.events.append("create_transaction")
@@ -89,6 +104,10 @@ class FakeRepository:
             raise RuntimeError("analysis insert failed")
         self.analysis = type("Analysis", (), {"analysis_key": uuid4(), **data})()
         return self.analysis
+
+    def get_payer_history(self, transaction, windows_minutes):
+        self.events.append(("get_payer_history", tuple(windows_minutes)))
+        return self.history
 
     def get_analysis_by_external_id(self, _external_id):
         return self.existing_analysis
@@ -119,8 +138,11 @@ class FakeBootstrapPolicy:
     def __init__(self):
         self.calls = 0
 
-    def evaluate(self, _payload):
+        self.evidence_snapshot = None
+
+    def evaluate(self, _payload, evidence_snapshot):
         self.calls += 1
+        self.evidence_snapshot = evidence_snapshot
         return {
             "status": "approved",
             "metadata": {
@@ -128,7 +150,7 @@ class FakeBootstrapPolicy:
                 "reason_code": "BOOTSTRAP_NO_RISK_ASSESSMENT",
                 "reason_description": "No antifraud risk assessment was performed.",
             },
-            "evidence_snapshot": {},
+            "evidence_snapshot": evidence_snapshot,
             "policy_version": "bootstrap-dev-v1",
         }
 
@@ -143,7 +165,13 @@ def test_create_persists_transaction_and_analysis_before_commit():
 
     response = controller.create(valid_pix_payload())
 
-    assert repository.events == ["create_transaction", "create_analysis"]
+    assert repository.events == [
+        ("acquire_payer_lock", "00ABC12345000199", "0001", "00088213"),
+        "get_database_clock",
+        "create_transaction",
+        ("get_payer_history", (5, 60)),
+        "create_analysis",
+    ]
     assert session.events == ["commit"]
     assert set(response) == {"key", "status", "metadata"}
     assert response["status"] == "approved"
@@ -153,6 +181,13 @@ def test_create_persists_transaction_and_analysis_before_commit():
     assert repository.transaction.payer_document == "00ABC12345000199"
     assert isinstance(repository.transaction.transaction_at, datetime)
     assert repository.transaction.transaction_at.utcoffset() is not None
+    assert repository.transaction.received_at == repository.admitted_at
+    assert repository.analysis.evidence_snapshot == bootstrap_policy.evidence_snapshot
+    assert repository.analysis.evidence_snapshot["is_first_observed_attempt"] is True
+    assert repository.analysis.evidence_snapshot["windows"]["5m"] == {
+        "attempt_count": 1,
+        "amount_cents": 150000,
+    }
 
 
 def test_identical_replay_returns_exact_snapshot_without_writes_or_policy_call():
@@ -221,7 +256,7 @@ def test_external_id_race_rolls_back_and_returns_winner_without_recalculating():
 
         def get_transaction_by_external_id(self, external_id):
             self.lookups += 1
-            if self.lookups == 1:
+            if self.lookups <= 2:
                 return None
             return super().get_transaction_by_external_id(external_id)
 
@@ -336,6 +371,24 @@ def test_rolls_back_when_analysis_creation_fails():
         controller.create(valid_pix_payload())
 
     assert session.events == ["rollback"]
+
+
+def test_history_query_failure_rolls_back_without_fabricating_evidence():
+    class FailingHistoryRepository(FakeRepository):
+        def get_payer_history(self, transaction, windows_minutes):
+            raise RuntimeError("history query failed")
+
+    session = FakeSession()
+    repository = FailingHistoryRepository()
+    policy = FakeBootstrapPolicy()
+    controller = controller_with(session, repository, policy)
+
+    with pytest.raises(RuntimeError, match="history query failed"):
+        controller.create(valid_pix_payload())
+
+    assert session.events == ["rollback"]
+    assert policy.calls == 0
+    assert repository.analysis is None
 
 
 def test_does_not_return_success_when_commit_fails():

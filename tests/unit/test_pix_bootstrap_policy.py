@@ -13,14 +13,16 @@ from controllers.pix_bootstrap_policy import BootstrapPolicyUnavailable, PixBoot
 
 
 def test_bootstrap_policy_is_explicit_about_not_assessing_risk():
-    decision = PixBootstrapPolicy(app_env="test").evaluate({})
+    evidence = {"schema_version": "pix-history-v1", "windows": {}}
+    decision = PixBootstrapPolicy(app_env="test").evaluate({}, evidence)
 
     assert decision["status"] == "approved"
     assert decision["policy_version"] == "bootstrap-dev-v1"
     assert decision["metadata"]["reason_code"] == "BOOTSTRAP_NO_RISK_ASSESSMENT"
+    assert decision["evidence_snapshot"] is evidence
 
 
 @pytest.mark.parametrize("app_env", ["production", "staging", ""])
 def test_bootstrap_policy_is_blocked_outside_development_and_test(app_env):
     with pytest.raises(BootstrapPolicyUnavailable):
-        PixBootstrapPolicy(app_env=app_env).evaluate({})
+        PixBootstrapPolicy(app_env=app_env).evaluate({}, {})

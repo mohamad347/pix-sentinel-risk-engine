@@ -4,10 +4,10 @@
 
 ## Estado atual
 
-A Fatia 2 implementa a infraestrutura persistente e idempotente do motor:
-recebe um Pix, grava a tentativa e sua análise em uma única transação de banco,
-recupera reenvios e permite consultar o parecer original pelo `id` externo.
-Ainda não há regras reais de risco, velocity, score ou detecção de contraparte.
+A Fatia 3 implementa a infraestrutura persistente, idempotente e a extração de
+histórico do motor. Cada nova tentativa é serializada por conta pagadora e gera
+evidências de frequência e montante em janelas experimentais de 5 e 60 minutos.
+Ainda não há regras reais de risco, score ou detecção de contraparte.
 
 ## Como o motor de decisão funciona
 
@@ -28,6 +28,22 @@ Para atualizar uma base criada na Fatia 1, revise e execute manualmente
 é incremental e não remove dados. Registros anteriores recebem a versão
 `phase-1-provisional`; a comparação de replay recalcula a identidade a partir do
 payload original para evitar conflitos falsos com o hash provisório.
+
+O pagador é identificado pela composição exata de documento, agência e número
+da conta de origem. Antes de admitir uma tentativa nova, o controller adquire
+um `pg_advisory_xact_lock` para essa identidade. Depois da espera, o instante de
+admissão vem de `clock_timestamp()` do PostgreSQL. As janelas usam
+`(T - W, T]`, incluem a tentativa atual e consideram tentativas persistidas de
+qualquer parecer. Replay não cria uma nova observação.
+
+O snapshot interno `pix-history-v1` registra `admitted_at`, quantidade anterior,
+indicador de primeira observação e, para cada janela, quantidade de tentativas e
+soma em centavos. Ele fica em `pix_analyses.evidence_snapshot` e não integra a
+resposta pública.
+
+`is_first_observed_attempt` significa apenas que não havia tentativa anterior
+para essa conta no PIX SENTINEL; não afirma que o cliente nunca realizou Pix no
+banco.
 
 Todas as rotas de negócio exigem o cabeçalho `INTERNAL-TOKEN`.
 
@@ -58,6 +74,10 @@ docker compose up --build
 O comando acima usa `APP_ENV=local` e `INTERNAL_TOKEN=default_token` por padrão.
 Não aplique o arquivo de inicialização sobre um banco existente sem revisar uma
 atualização incremental própria para esse ambiente.
+
+Bases criadas antes da Fatia 3 devem receber, após revisão do destino, o índice
+incremental de `database/003_add_pix_payer_history_index.sql`. O script apenas
+cria o índice composto necessário às consultas históricas.
 
 ## Como testar
 
