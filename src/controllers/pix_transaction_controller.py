@@ -1,6 +1,6 @@
 import math
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
 
@@ -15,6 +15,7 @@ from utils.pix_canonicalization import (
     parse_aware_datetime,
     pix_request_fingerprint,
 )
+from utils.pix_history import HISTORY_WINDOWS_MINUTES, build_evidence_snapshot
 
 
 EXTERNAL_ID_UNIQUE_CONSTRAINT = "pix_transactions_external_id_key"
@@ -64,9 +65,6 @@ def validate_and_extract_pix_data(payload: dict) -> dict:
         "request_payload": deepcopy(payload),
         "amount_cents": amount,
         "transaction_at": transaction_at,
-        # Phase one records when the controller admits a valid new request.
-        # The post-lock semantics for velocity remain a phase-three decision.
-        "received_at": datetime.now(timezone.utc),
         "payer_document": source_account["owner"]["document_number"],
         "payer_branch": source_account["branch"],
         "payer_account_number": source_account["account_number"],
@@ -94,8 +92,30 @@ class PixTransactionController(BaseController):
             return self._resolve_existing(existing, transaction_data["request_fingerprint"])
 
         try:
+            self.pix_transaction_repository.acquire_payer_lock(
+                transaction_data["payer_document"],
+                transaction_data["payer_branch"],
+                transaction_data["payer_account_number"],
+            )
+
+            existing = self.pix_transaction_repository.get_transaction_by_external_id(
+                transaction_data["external_id"]
+            )
+            if existing is not None:
+                return self._resolve_existing(existing, transaction_data["request_fingerprint"])
+
+            transaction_data["received_at"] = self.pix_transaction_repository.get_database_clock()
             transaction = self.pix_transaction_repository.create_transaction(**transaction_data)
-            decision = self.policy.evaluate(transaction_data)
+            history = self.pix_transaction_repository.get_payer_history(
+                transaction,
+                HISTORY_WINDOWS_MINUTES,
+            )
+            evidence_snapshot = build_evidence_snapshot(
+                admitted_at=transaction.received_at,
+                prior_attempt_count=history["prior_attempt_count"],
+                windows=history["windows"],
+            )
+            decision = self.policy.evaluate(transaction_data, evidence_snapshot)
             analysis = self.pix_transaction_repository.create_analysis(
                 transaction,
                 status=decision["status"],

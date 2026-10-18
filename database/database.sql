@@ -28,3 +28,6 @@ CREATE TABLE pix_analyses(
     evaluated_at                    TIMESTAMPTZ NOT NULL,
     CONSTRAINT pix_analyses_transaction_id_key UNIQUE (transaction_id)
 );
+
+CREATE INDEX ix_pix_transactions_payer_received_at
+    ON pix_transactions (payer_document, payer_branch, payer_account_number, received_at);

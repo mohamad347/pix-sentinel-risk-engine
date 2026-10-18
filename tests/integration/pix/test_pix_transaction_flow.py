@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from controllers.pix_bootstrap_policy import PixBootstrapPolicy
 from controllers.pix_transaction_controller import PixTransactionController
+from errors import PixTransactionConflict
 from repositories import PixTransactionRepository
 from tests.utils import PayloadGenerator, RequestGenerator
 
@@ -139,38 +140,43 @@ def test_postgresql_unique_collision_is_recovered_after_both_prechecks_miss():
     class CountingPolicy(PixBootstrapPolicy):
         calls = 0
 
-        def evaluate(self, transaction_data):
+        def evaluate(self, transaction_data, evidence_snapshot):
             type(self).calls += 1
-            return super().evaluate(transaction_data)
+            return super().evaluate(transaction_data, evidence_snapshot)
 
     class SynchronizedRepository(PixTransactionRepository):
-        def __init__(self, session, barrier):
+        def __init__(self, session, barriers):
             self.session = session
-            self.barrier = barrier
-            self.first_lookup = True
+            self.barriers = barriers
+            self.lookup_count = 0
 
         def get_transaction_by_external_id(self, external_id):
             transaction = super().get_transaction_by_external_id(external_id)
-            if self.first_lookup:
-                self.first_lookup = False
+            self.lookup_count += 1
+            if self.lookup_count <= 2:
                 assert transaction is None
-                self.barrier.wait()
+                self.barriers[self.lookup_count - 1].wait()
             return transaction
 
-    def create_with_separate_session(payload, barrier, session_factory):
+    def create_with_separate_session(payload, barriers, session_factory):
         session = session_factory()
         try:
             controller = PixTransactionController.__new__(PixTransactionController)
             controller.session = session
-            controller.pix_transaction_repository = SynchronizedRepository(session, barrier)
+            controller.pix_transaction_repository = SynchronizedRepository(session, barriers)
             controller.policy = CountingPolicy("test")
-            return controller.create(payload)
+            try:
+                return "success", controller.create(payload)
+            except PixTransactionConflict:
+                return "conflict", None
         finally:
             session.close()
 
     external_id = f"pix-forced-race-{uuid4()}"
-    payload = PayloadGenerator.create_pix_transaction_payload(external_id=external_id)
-    barrier = Barrier(2)
+    first = PayloadGenerator.create_pix_transaction_payload(external_id=external_id)
+    second = deepcopy(first)
+    second["source_account"]["owner"]["document_number"] = "DIFFERENT-PAYER"
+    barriers = (Barrier(2), Barrier(2))
     engine = create_engine(DATABASE_URL)
     session_factory = sessionmaker(bind=engine, autoflush=False)
     try:
@@ -178,17 +184,17 @@ def test_postgresql_unique_collision_is_recovered_after_both_prechecks_miss():
             futures = [
                 executor.submit(
                     create_with_separate_session,
-                    deepcopy(payload),
-                    barrier,
+                    payload,
+                    barriers,
                     session_factory,
                 )
-                for _ in range(2)
+                for payload in (first, second)
             ]
-            responses = [future.result() for future in futures]
+            results = [future.result() for future in futures]
     finally:
         engine.dispose()
 
-    assert responses[0] == responses[1]
+    assert sorted(result for result, _ in results) == ["conflict", "success"]
     assert CountingPolicy.calls == 1
 
 

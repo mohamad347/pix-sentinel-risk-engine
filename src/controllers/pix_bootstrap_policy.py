@@ -11,7 +11,7 @@ class PixBootstrapPolicy:
     def __init__(self, app_env: str) -> None:
         self.app_env = app_env
 
-    def evaluate(self, _transaction_data: dict) -> dict:
+    def evaluate(self, _transaction_data: dict, evidence_snapshot: dict) -> dict:
         if self.app_env.upper() not in ALLOWED_BOOTSTRAP_ENVIRONMENTS:
             raise BootstrapPolicyUnavailable()
 
@@ -23,6 +23,6 @@ class PixBootstrapPolicy:
                 "reason_code": "BOOTSTRAP_NO_RISK_ASSESSMENT",
                 "reason_description": "No antifraud risk assessment was performed.",
             },
-            "evidence_snapshot": {},
+            "evidence_snapshot": evidence_snapshot,
             "policy_version": BOOTSTRAP_POLICY_VERSION,
         }
