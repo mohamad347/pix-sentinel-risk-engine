@@ -17,7 +17,7 @@ class PixAnalysis(Base):
     evaluated_at = Column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("transaction_id"),
+        UniqueConstraint("transaction_id", name="pix_analyses_transaction_id_key"),
         CheckConstraint(
             "status IN ('approved', 'two_factor_required', 'rejected')",
             name="ck_pix_analyses_status",

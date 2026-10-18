@@ -11,6 +11,7 @@ class PixTransaction(Base):
     id = Column(BigInteger, primary_key=True)
     external_id = Column(String, nullable=False)
     request_fingerprint = Column(CHAR(64), nullable=False)
+    canonicalization_version = Column(String, nullable=False)
     request_payload = Column(JSONB, nullable=False)
     amount_cents = Column(BigInteger, nullable=False)
     transaction_at = Column(DateTime(timezone=True), nullable=False)
@@ -25,7 +26,7 @@ class PixTransaction(Base):
     source_device_id = Column(String, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("external_id"),
+        UniqueConstraint("external_id", name="pix_transactions_external_id_key"),
         CheckConstraint("amount_cents > 0", name="ck_pix_transactions_positive_amount"),
     )
 

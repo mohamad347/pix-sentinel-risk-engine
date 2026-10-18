@@ -4,10 +4,10 @@
 
 ## Estado atual
 
-A Fatia 1 implementa a infraestrutura persistente do motor: recebe um Pix,
-grava a tentativa e sua análise em uma única transação de banco e permite
-consultar o parecer original pelo `id` externo. Ainda não há regras reais de
-risco, velocity, score ou detecção de contraparte.
+A Fatia 2 implementa a infraestrutura persistente e idempotente do motor:
+recebe um Pix, grava a tentativa e sua análise em uma única transação de banco,
+recupera reenvios e permite consultar o parecer original pelo `id` externo.
+Ainda não há regras reais de risco, velocity, score ou detecção de contraparte.
 
 ## Como o motor de decisão funciona
 
@@ -16,6 +16,18 @@ materializa os campos necessários às próximas consultas históricas e grava u
 linha em `pix_transactions` e outra em `pix_analyses`. O commit ocorre antes da
 resposta HTTP. `GET /pix/transaction/{id}` lê o snapshot salvo, sem recalcular a
 decisão.
+
+Reenvios usam a canonização `pix-official-v1`. Ela considera somente os campos
+oficiais, normaliza instantes equivalentes para UTC e preserva identificadores
+textuais exatamente como recebidos. Campos extras são mantidos no primeiro
+`request_payload`, mas não mudam a identidade. Um reenvio equivalente devolve a
+decisão persistida; o mesmo `id` com dados oficiais diferentes devolve `409`.
+
+Para atualizar uma base criada na Fatia 1, revise e execute manualmente
+`database/002_add_pix_canonicalization_version.sql` no destino correto. O script
+é incremental e não remove dados. Registros anteriores recebem a versão
+`phase-1-provisional`; a comparação de replay recalcula a identidade a partir do
+payload original para evitar conflitos falsos com o hash provisório.
 
 Todas as rotas de negócio exigem o cabeçalho `INTERNAL-TOKEN`.
 
@@ -61,11 +73,19 @@ duas travas deliberadas: `PIX_INTEGRATION_TESTS=1` e o nome do banco em
 `DATABASE_URL` precisa conter `test`.
 
 ```powershell
+docker compose -p pix-sentinel-tests -f docker-compose.test.yml up --build -d
+$env:DATABASE_URL = "postgresql+psycopg2://pix_test:pix_test@localhost:55432/pix_sentinel_test"
 $env:PIX_INTEGRATION_TESTS = "1"
 $env:APP_ENV = "test"
 $env:PYTHONPATH = "src"
+$env:SERVER_LOCALHOST = "localhost"
+$env:API_PORT = "3300"
+$env:INTERNAL_TOKEN = "pix-test-token"
 python -m pytest tests/integration/pix -q
 ```
+
+O Compose de testes usa nomes, portas e credenciais próprias. O diretório de
+dados do PostgreSQL fica em `tmpfs`, sem reutilizar volumes de desenvolvimento.
 
 ## Exemplo de POST
 

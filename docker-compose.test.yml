@@ -1,0 +1,36 @@
+services:
+  pix_test_db:
+    build: ./database/.
+    environment:
+      POSTGRES_USER: pix_test
+      POSTGRES_PASSWORD: pix_test
+      POSTGRES_DB: pix_sentinel_test
+    ports:
+      - "55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pix_test -d pix_sentinel_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  pix_test_api:
+    build:
+      context: .
+      target: api
+    environment:
+      DATABASE_URL: postgresql+psycopg2://pix_test:pix_test@pix_test_db:5432/pix_sentinel_test
+      APP_ENV: test
+      SERVICE_NAME: pix-sentinel-test
+      INTERNAL_TOKEN: pix-test-token
+    ports:
+      - "3300:3000"
+    depends_on:
+      pix_test_db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:3000/health_check\")'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

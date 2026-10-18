@@ -1,54 +1,30 @@
-import hashlib
-import json
 import math
 from copy import deepcopy
 from datetime import datetime, timezone
+
+from sqlalchemy.exc import IntegrityError
 
 from constants import APP_ENV
 from controllers.base_controller import BaseController
 from controllers.pix_bootstrap_policy import PixBootstrapPolicy
 from dtos import PixAnalysisDTO
-from errors import InvalidPixPayload, PixAnalysisNotFound
+from errors import InvalidPixPayload, PixAnalysisNotFound, PixTransactionConflict
 from repositories import PixTransactionRepository
+from utils.pix_canonicalization import (
+    CANONICALIZATION_VERSION,
+    parse_aware_datetime,
+    pix_request_fingerprint,
+)
+
+
+EXTERNAL_ID_UNIQUE_CONSTRAINT = "pix_transactions_external_id_key"
 
 
 def _parse_aware_datetime(raw_value: str) -> datetime:
     try:
-        parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
-    except (AttributeError, ValueError):
+        return parse_aware_datetime(raw_value)
+    except (TypeError, ValueError):
         raise InvalidPixPayload()
-
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise InvalidPixPayload()
-
-    return parsed
-
-
-def _official_payload(payload: dict) -> dict:
-    """Select only challenge fields for the provisional phase-one hash."""
-    source = payload["source"]
-    official_source = {
-        "device_id": source["device_id"],
-        "channel": source["channel"],
-        "ip": source["ip"],
-    }
-    if "geolocation" in source:
-        official_source["geolocation"] = source["geolocation"]
-
-    return {
-        "id": payload["id"],
-        "amount": payload["amount"],
-        "transaction_date": payload["transaction_date"],
-        "source_account": deepcopy(payload["source_account"]),
-        "destination_account": deepcopy(payload["destination_account"]),
-        "source": deepcopy(official_source),
-    }
-
-
-def _provisional_fingerprint(payload: dict) -> str:
-    """Fill the structural column; replay canonization belongs to phase two."""
-    serialized = json.dumps(_official_payload(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def validate_and_extract_pix_data(payload: dict) -> dict:
@@ -83,7 +59,8 @@ def validate_and_extract_pix_data(payload: dict) -> dict:
 
     return {
         "external_id": external_id,
-        "request_fingerprint": _provisional_fingerprint(payload),
+        "request_fingerprint": pix_request_fingerprint(payload),
+        "canonicalization_version": CANONICALIZATION_VERSION,
         "request_payload": deepcopy(payload),
         "amount_cents": amount,
         "transaction_at": transaction_at,
@@ -109,10 +86,16 @@ class PixTransactionController(BaseController):
 
     def create(self, payload: dict) -> dict:
         transaction_data = validate_and_extract_pix_data(payload)
-        decision = self.policy.evaluate(transaction_data)
+
+        existing = self.pix_transaction_repository.get_transaction_by_external_id(
+            transaction_data["external_id"]
+        )
+        if existing is not None:
+            return self._resolve_existing(existing, transaction_data["request_fingerprint"])
 
         try:
             transaction = self.pix_transaction_repository.create_transaction(**transaction_data)
+            decision = self.policy.evaluate(transaction_data)
             analysis = self.pix_transaction_repository.create_analysis(
                 transaction,
                 status=decision["status"],
@@ -122,11 +105,39 @@ class PixTransactionController(BaseController):
             )
             response = PixAnalysisDTO.obj_to_dict(analysis)
             self.session.commit()
+        except IntegrityError as exception:
+            self.session.rollback()
+            if self._constraint_name(exception) != EXTERNAL_ID_UNIQUE_CONSTRAINT:
+                raise
+
+            winner = self.pix_transaction_repository.get_transaction_by_external_id(
+                transaction_data["external_id"]
+            )
+            if winner is None:
+                raise
+            return self._resolve_existing(winner, transaction_data["request_fingerprint"])
         except Exception:
             self.session.rollback()
             raise
 
         return response
+
+    @staticmethod
+    def _constraint_name(exception: IntegrityError) -> str | None:
+        diagnostic = getattr(exception.orig, "diag", None)
+        return getattr(diagnostic, "constraint_name", None)
+
+    @staticmethod
+    def _resolve_existing(existing, request_fingerprint: str) -> dict:
+        if getattr(existing, "canonicalization_version", None) == CANONICALIZATION_VERSION:
+            persisted_fingerprint = existing.request_fingerprint
+        else:
+            # Phase-one hashes did not normalize instants. Recomputing from the
+            # preserved original payload avoids false conflicts for those rows.
+            persisted_fingerprint = pix_request_fingerprint(existing.request_payload)
+        if persisted_fingerprint != request_fingerprint:
+            raise PixTransactionConflict()
+        return PixAnalysisDTO.obj_to_dict(existing.analysis)
 
     def get_by_external_id(self, external_id: str) -> dict:
         analysis = self.pix_transaction_repository.get_analysis_by_external_id(external_id)

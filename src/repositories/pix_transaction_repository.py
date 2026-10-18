@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from sqlalchemy.orm import contains_eager
+
 from database import Context
 from models import PixAnalysis, PixTransaction
 
@@ -40,6 +42,15 @@ class PixTransactionRepository:
         return (
             self.session.query(PixAnalysis)
             .join(PixTransaction, PixAnalysis.transaction_id == PixTransaction.id)
+            .filter(PixTransaction.external_id == external_id)
+            .one_or_none()
+        )
+
+    def get_transaction_by_external_id(self, external_id: str) -> PixTransaction:
+        return (
+            self.session.query(PixTransaction)
+            .join(PixAnalysis, PixAnalysis.transaction_id == PixTransaction.id)
+            .options(contains_eager(PixTransaction.analysis))
             .filter(PixTransaction.external_id == external_id)
             .one_or_none()
         )
