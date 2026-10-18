@@ -379,12 +379,7 @@ def run() -> dict:
 
 
 def main() -> None:
-    output = ROOT / "docs" / "PIX_SENTINEL_RESULTADOS_V3_CENARIOS.json"
     result = run()
-    output.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
 
 

@@ -344,14 +344,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--output",
-        default=str(ROOT / "docs" / "PIX_SENTINEL_RESULTADOS_V2_R2_A_B2_C2_C3.json"),
+        help="Optional path for the complete JSON result; stdout is always printed.",
     )
     args = parser.parse_args()
     result = run()
-    Path(args.output).write_text(
-        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    if args.output:
+        Path(args.output).write_text(
+            json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     print(json.dumps(result["metrics"], ensure_ascii=False, indent=2, sort_keys=True))
 
 

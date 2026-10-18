@@ -12,6 +12,9 @@ pydantic==2.13.4
 # de src/schemas/. E a mesma versao que os servicos da QI usam.
 jsonschema==4.17.3
 SQLAlchemy==2.0.23
+# O Windows nao distribui a base IANA usada por zoneinfo. Mantemos o pacote
+# tambem no Linux para que America/Sao_Paulo funcione igual em todo ambiente.
+tzdata==2026.5
 # 2.9.10 e a primeira serie com pacote pronto para ARM: no Mac M1/M2/M3
 # a 2.9.5 tentaria compilar do zero e o build quebrava.
 psycopg2-binary==2.9.10

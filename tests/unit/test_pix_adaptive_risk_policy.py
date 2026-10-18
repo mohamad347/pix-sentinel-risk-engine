@@ -129,7 +129,6 @@ def test_exposure_uses_the_strongest_non_redundant_signal_per_dimension():
     assert {"MICROBURST_1M", "STRUCTURED_AGGREGATE_60M"} <= set(
         policy["triggered_signals"]
     )
-    assert "ELEVATED_ATTEMPT_COUNT_5M" not in policy["triggered_signals"]
     assert "ELEVATED_ATTEMPT_TOTAL_60M" not in policy["triggered_signals"]
 
 
@@ -137,6 +136,7 @@ def test_exposure_uses_the_strongest_non_redundant_signal_per_dimension():
     ("payer_type", "count_1m", "count_5m", "expected_score", "expected_signal"),
     (
         ("pf", 1, 4, 0, None),
+        ("pf", 1, 7, 0, None),
         ("pf", 4, 4, 25, "MICROBURST_1M"),
         ("pj", 1, 8, 0, None),
         ("pj", 6, 8, 25, "MICROBURST_1M"),

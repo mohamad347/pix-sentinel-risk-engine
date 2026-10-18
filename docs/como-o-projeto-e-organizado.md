@@ -1,74 +1,120 @@
-# Como o projeto é organizado
+# Como o PIX SENTINEL é organizado
 
-O PIX SENTINEL segue o fluxo arquitetural do Base Service:
+Este documento descreve o repositório como ele está implementado em
+18/10/2026. O PIX SENTINEL é uma API FastAPI com PostgreSQL que recebe uma
+tentativa de Pix, produz um parecer antifraude explicável e persiste a decisão.
+Ele não consulta saldo, não executa o Pix e não realiza o segundo fator.
+
+## Visão geral
 
 ```text
 requisição HTTP
-  → middlewares
-  → resource
-  → JSON Schema
-  → controller
-  → repository
-  → models / PostgreSQL
-  → DTO
-  → resposta HTTP
+  → contexto e correlação
+  → log e autenticação interna
+  → sessão de banco
+  → resource e JSON Schema
+  → controller e transação
+  → repository e PostgreSQL
+  → política antifraude
+  → DTO e resposta HTTP
 ```
 
-## Responsabilidade de cada camada
+O caminho de negócio possui duas rotas: `POST /pix/transaction`, que avalia e
+persiste uma tentativa, e `GET /pix/transaction/{id}`, que recupera o snapshot
+original pelo `id` externo. As rotas `/` e `/health_check` são apenas de
+infraestrutura.
 
-| Pasta | Responsabilidade |
+## Estrutura do repositório
+
+| Caminho | Responsabilidade atual |
 |---|---|
-| `resources/` | Receber a requisição, validar o contrato de entrada, chamar o controller e definir a resposta HTTP |
-| `schemas/` | Declarar os JSON aceitos pela API |
-| `controllers/` | Orquestrar a regra de negócio, a política antifraude e o commit da transação |
-| `repositories/` | Executar consultas e alterações no banco usando a sessão recebida pelo contexto |
-| `models/` | Mapear as tabelas SQLAlchemy |
-| `dtos/` | Transformar objetos internos no contrato público da resposta |
-| `errors/` | Definir e converter erros no envelope QI Tech |
-| `middlewares/` | Aplicar token interno, correlação, logs e ciclo de vida da sessão |
-| `connectors/` | Encapsular chamadas HTTP externas quando alguma integração for necessária |
-| `utils/` | Manter ferramentas genéricas compartilhadas |
+| `src/app.py` | Cria a aplicação, registra os quatro middlewares, as quatro rotas e os tratadores de erro. |
+| `src/resources/` | Traduz HTTP para chamadas de controller e define o status de sucesso. |
+| `src/schemas/` | Contém o JSON Schema da entrada do POST. |
+| `src/controllers/pix_transaction_controller.py` | Valida semântica, controla idempotência, lock, histórico, política, persistência e commit. |
+| `src/controllers/pix_adaptive_risk_policy.py` | Implementa a política padrão `mvp-risk-adaptive-v3-r5`. |
+| `src/controllers/pix_policy_selector.py` | Seleciona R5 por padrão; mantém V1 selecionável e V2/V2 R2 restritas a teste. |
+| `src/repositories/` | Executa locks, agregações históricas e operações SQLAlchemy. |
+| `src/models/` | Mapeia `pix_transactions` e `pix_analyses`. |
+| `src/dtos/` | Limita a saída pública a `key`, `status` e `metadata`. |
+| `src/utils/pix_context.py` | Deriva contexto de perfil, acesso, horário, geolocalização e rede. |
+| `src/utils/pix_history.py` | Monta o snapshot histórico e a chave do advisory lock. |
+| `src/utils/pix_canonicalization.py` | Canoniza o contrato oficial e gera o SHA-256 usado na idempotência. |
+| `src/errors/` | Converte erros previstos e inesperados no envelope HTTP do projeto. |
+| `src/middlewares/` | Mantém request ID, logs, token interno e ciclo de vida da sessão. |
+| `database/` | Schema para instalações novas e SQL incremental para bases existentes. |
+| `tests/` | Testes unitários e integrações reais com PostgreSQL. |
+| `scripts/` | Matriz de testes, demonstração, avaliações sintéticas e benchmark. |
 
-## Fluxo Pix atual
+`src/connectors/` pertence ao template base e não participa do fluxo antifraude
+Pix atual.
 
-O endereço e o verbo são registrados explicitamente em `src/app.py`.
-`PixTransactionResource` valida o POST com `post_pix_transaction.json` e
-encaminha o payload ao `PixTransactionController`. O controller aplica a
-serialização transacional por pagador, usa `PixTransactionRepository` para
-persistir a tentativa e extrair o histórico, aplica a política ativa com essas
-evidências e persiste o parecer. Tudo é confirmado por um único commit. O
-middleware fecha a sessão e executa rollback quando uma exceção escapa do fluxo.
+## Separação de responsabilidades
 
-O GET recebe o ID externo do Pix, consulta a análise persistida pelo repository
-e usa `PixAnalysisDTO` para devolver somente `key`, `status` e `metadata`.
+O resource valida a estrutura pelo JSON Schema e chama o controller. O
+controller valida regras que o schema não representa com segurança, como
+inteiro estrito e timestamp com fuso, e define o limite transacional completo.
+O repository recebe a sessão já associada à requisição; ele não cria sessão nem
+faz commit. A política recebe somente dados extraídos e evidências derivadas,
+sem acessar HTTP ou banco diretamente.
 
-## Sessão e transação
+O commit ocorre no controller depois de criar a tentativa e a análise. O
+middleware de sessão executa rollback quando uma exceção escapa e fecha a
+sessão sempre. Como o SQLAlchemy usa `autoflush=False`, o repository usa
+`flush()` para obter a chave interna antes de criar a análise, sem tornar a
+linha visível a outras transações antes do commit.
 
-O middleware em `src/middlewares/session_manager.py` prepara um `Context` por
-requisição. Somente o controller obtém esse contexto por meio de
-`BaseController`; o repository recebe o contexto e usa sua sessão. O commit
-pertence ao controller, pois ele conhece o limite completo da operação.
+## Concorrência e histórico
 
-Como `SessionLocal` usa `autoflush=False`, o repository chama `flush()` quando
-precisa materializar a chave da tentativa antes de criar a análise. Tentativa e
-análise permanecem na mesma transação.
+Cada novo Pix adquire `pg_advisory_xact_lock` sobre uma chave SHA-256 derivada
+de documento, agência e conta do pagador. O lock é liberado pelo PostgreSQL no
+commit ou rollback e possui timeout local de 1 segundo. Depois do lock, o
+servidor obtém `received_at` com `clock_timestamp()`, insere a tentativa e faz
+as agregações.
 
-Novas tentativas da mesma conta pagadora usam `pg_advisory_xact_lock`. O lock é
-transacional e termina no commit ou rollback. Com `READ COMMITTED`, a consulta
-executada depois de adquirir o lock observa o commit da tentativa anterior. O
-`received_at` vem de `clock_timestamp()` após a espera pelo lock.
+As janelas são `(T − W, T]` e incluem a tentativa atual exatamente uma vez. As
+consultas de “anterior” excluem sua chave interna. Perfil de valor e referência
+geográfica usam somente decisões anteriores `approved`; velocity, familiaridade
+de device/IP/canal e rede usam tentativas locais válidas independentemente do
+parecer.
 
-## Entrada e saída
+## Política ativa
 
-`src/schemas/post_pix_transaction.json` cuida da estrutura de entrada. As
-validações que dependem da semântica de Python, como inteiro estrito e datetime
-com fuso, ficam no controller.
+A variável `PIX_RISK_POLICY` seleciona a política. Sem configuração explícita,
+a aplicação usa `mvp-risk-adaptive-v3-r5`, formada por 28 sinais agrupados em
+seis famílias com teto próprio. O score é limitado a 100, mas rejeição não
+depende apenas dele: há salvaguardas para rajada crítica, viagem impossível com
+anomalia de acesso e convergência de múltiplas famílias. O README contém a
+tabela completa das regras.
 
-`src/dtos/pix_analysis_dto.py` define a saída pública. Dados sensíveis do
-payload e evidências internas não devem ser acrescentados ao DTO.
+V1 (`mvp-risk-experimental-v1`) permanece disponível para compatibilidade. V2
+e V2 R2 só podem ser selecionadas com `APP_ENV=test`; elas existem para a
+matriz comparativa, não como configuração operacional.
 
-## Banco de dados
+## Como executar
 
-`database/database.sql` é o schema de inicialização de instalações novas. Ele
-não é um mecanismo de migração para bancos existentes. Alterações em bases já
-criadas exigem SQL incremental revisado para aquele ambiente.
+API e PostgreSQL de desenvolvimento:
+
+```powershell
+docker compose up --build -d --wait
+```
+
+Matriz completa, com banco descartável e falha se houver teste pulado:
+
+```powershell
+docker compose -p pix-sentinel-tests -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from pix_test_runner
+```
+
+O executor alterna R5, V1, V2 e V2 R2 e limpa o PostgreSQL entre as suítes. O
+resultado validado mais recente é `176 passed, 0 skipped`.
+
+## Documentação mantida
+
+| Documento | Assunto |
+|---|---|
+| `como-o-projeto-e-organizado.md` | Camadas, responsabilidades e execução. |
+| `PIX_SENTINEL_RFC_v1 (1).md` | Decisões arquiteturais e de produto. |
+| `PIX_SENTINEL_ERD_v1 (1).md` | Modelo persistente e índices reais. |
+| `PIX_SENTINEL_FLUXOS_v1 (1).md` | Fluxos de POST, GET, decisão, replay e falha. |
+| `PIX_SENTINEL_ROTAS_v1 (2).md` | Contrato HTTP efetivamente implementado. |
+| `PIX_SENTINEL_ESTATISTICAS_TEMPO_API.md` | Metodologia e resultados do benchmark local. |

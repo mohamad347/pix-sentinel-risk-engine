@@ -11,7 +11,7 @@ três pareceres: `approved`, `two_factor_required` ou `rejected`.
 Payload Pix → validação → histórico PostgreSQL → regras de risco → score → decisão
 ```
 
-A política vigente, `mvp-risk-adaptive-v3-r4`, combina 29 sinais em seis
+A política vigente, `mvp-risk-adaptive-v3-r5`, combina 28 sinais em seis
 famílias independentes: exposição/velocity, perfil, relacionamento, acesso,
 temporal e rede do recebedor. Cada família possui um teto para impedir que
 sinais correlacionados inflem o score. O resultado final é limitado a 100.
@@ -37,17 +37,15 @@ fraude. Dentro de exposição, perfil, relacionamento e temporal prevalece o mai
 nível aplicável; acesso e rede do recebedor podem acumular pontos até o teto da
 família.
 
-Na dimensão de frequência, os níveis são mutuamente exclusivos: quando a
-microrrajada de 1 minuto ocorre, a regra mais fraca de 5 minutos não é repetida.
-O mesmo vale para estruturação versus simples total elevado em 60 minutos.
-Essa escada produz severidade crescente e explicável: frequência em 5 minutos
-vale 15, microrrajada vale 25, estruturação vale 35 e rajada crítica vale 60.
+Na dimensão de frequência curta existe apenas a microrrajada de 1 minuto.
+Uma contagem espalhada por 5 minutos não pontua sozinha; essa janela somente
+habilita a rajada crítica quando contagem e volume financeiro são simultaneamente
+altos. Estruturação prevalece sobre o simples total elevado em 60 minutos.
 
 | Regra | Lógica | Parâmetros | Por quê |
 |---|---|---|---|
 | `ELEVATED_CURRENT_VALUE` | Valor atual elevado por segmento | PF/indefinido ≥ R$ 5.000; PJ ≥ R$ 15.000; define exposição em 25 | Evita tratar o fluxo financeiro típico de uma empresa como se fosse o de uma pessoa física. |
 | `MICROBURST_1M` | Muitas tentativas praticamente simultâneas | PF/indefinido ≥ 4; PJ ≥ 6 tentativas em 1 min; define exposição em 25 | É a aceleração mais forte: sozinha já justifica 2FA, com tolerância maior para lotes PJ. |
-| `ELEVATED_ATTEMPT_COUNT_5M` | Frequência elevada, mas menos concentrada | PF/indefinido ≥ 4; PJ ≥ 8 tentativas em 5 min; eleva exposição para pelo menos 15 | É um alerta combinatório; isolado não cria fricção e não duplica a microrrajada de 1 min. |
 | `ELEVATED_ATTEMPT_TOTAL_60M` | Alto volume acumulado | PF/indefinido ≥ R$ 15.000; PJ ≥ R$ 50.000 em 60 min; define exposição em 25 | Limita fracionamento sem penalizar da mesma forma o giro empresarial. |
 | `ELEVATED_ATTEMPT_TOTAL_24H` | Alto volume diário | PF/indefinido ≥ R$ 50.000; PJ ≥ R$ 150.000 em 24 h; define exposição em 25 | Enxerga ataques lentos fora das janelas curtas. |
 | `STRUCTURED_AGGREGATE_60M` | Contagem e valor elevados juntos | ≥ 10 tentativas e total de 60 min do segmento; define exposição em 35 | É mais grave que somente contagem ou somente valor, mas permanece abaixo da rajada crítica. |
@@ -132,14 +130,14 @@ prova de fraude.
 
 ### Exemplo concreto de cálculo
 
-Considere um Pix PF de R$ 6.000 que seja a quarta tentativa em cinco minutos,
+Considere um Pix PF de R$ 6.000 que seja a quarta tentativa em um minuto,
 feito de um dispositivo e IP novos para um destinatário novo:
 
 ```text
 Exposição
   valor ≥ R$ 5.000 .............. 25
-  4 tentativas em 5 min ......... 15
-  resultado da família .......... 25  (usa o maior; não soma 25 + 15)
+  4 tentativas em 1 min ......... 25
+  resultado da família .......... 25  (usa o maior; não soma 25 + 25)
 
 Acesso
   dispositivo novo .............. 10
@@ -159,8 +157,10 @@ o mesmo fenômeno: concentração de risco transacional. Já acesso e relacionam
 são evidências diferentes e entram separadamente no score.
 
 O racional completo, incluindo alternativas avaliadas, fórmula, salvaguardas e
-limitações, está em
-[Método de decisão e explicabilidade](docs/PIX_SENTINEL_METODO_DECISAO_E_EXPLICABILIDADE.md).
+limitações, está na
+[RFC do motor antifraude](docs/PIX_SENTINEL_RFC_v1%20(1).md).
+As medições reproduzíveis do endpoint de decisão estão em
+[Estatísticas de tempo da API Pix](docs/PIX_SENTINEL_ESTATISTICAS_TEMPO_API.md).
 
 ## Como rodar e testar
 
@@ -179,21 +179,40 @@ Pix usam o header `INTERNAL-TOKEN: default_token`:
 - `POST /pix/transaction` analisa e persiste uma tentativa;
 - `GET /pix/transaction/{id}` recupera a decisão original sem recalcular.
 
-Para executar toda a suíte em API e PostgreSQL descartáveis, sem instalar Python
-nem configurar variáveis na máquina:
+### Teste completo sem skips
+
+Executar apenas `python -m pytest -q` fora do Docker roda os testes unitários,
+mas pula as integrações que exigem API e PostgreSQL isolados. Além disso, uma
+instância da API só pode ter uma política ativa por vez. Por isso não seria
+correto testar expectativas de V1, V2 e R5 contra a mesma configuração.
+
+O Compose resolve isso com uma matriz sequencial. O `pix_test_runner` inicia a
+API com R5, V1, V2 e V2 R2, executa somente os testes correspondentes e limpa o
+PostgreSQL entre as etapas. O banco é descartável, nenhuma porta de teste é
+publicada na máquina e o executor falha se algum teste falhar **ou for pulado**.
+
+Assim, todos os testes podem ser executados com um único comando, sem instalar
+Python nem configurar `DATABASE_URL` localmente:
 
 ```powershell
 docker compose -p pix-sentinel-tests -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from pix_test_runner
 ```
 
-O serviço `pix_test_runner` espera banco e API ficarem saudáveis, executa o
-`pytest` dentro do Docker e devolve seu código de saída. Banco e API de teste se
-comunicam somente pela rede interna do Compose, sem disputar portas da máquina.
+Os argumentos garantem isolamento e um resultado confiável:
 
-Validação mais recente: `135 passed` nos testes unitários e `167 passed, 9
-skipped` na suíte completa com PostgreSQL isolado.
+- `-p pix-sentinel-tests` separa os recursos de teste da aplicação normal;
+- `-f docker-compose.test.yml` usa apenas a infraestrutura descartável de teste;
+- `--build` inclui o código e as dependências atuais nas imagens;
+- `--abort-on-container-exit` encerra o banco quando o executor termina;
+- `--exit-code-from pix_test_runner` faz o terminal retornar erro se a matriz falhar.
 
-Ao terminar, remova apenas o ambiente de teste:
+Resultado validado:
+
+```text
+176 passed, 0 skipped across all policy suites.
+```
+
+Ao terminar, remova os contêineres e volumes descartáveis:
 
 ```powershell
 docker compose -p pix-sentinel-tests -f docker-compose.test.yml down -v

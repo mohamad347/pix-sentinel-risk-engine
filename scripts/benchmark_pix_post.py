@@ -88,7 +88,9 @@ def main() -> None:
             )
     result = summarize(latencies)
     result["workers"] = args.workers
-    result["wall_ms"] = round((time.perf_counter() - started) * 1000, 2)
+    wall_ms = (time.perf_counter() - started) * 1000
+    result["wall_ms"] = round(wall_ms, 2)
+    result["throughput_rps"] = round(len(latencies) / (wall_ms / 1000), 2)
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

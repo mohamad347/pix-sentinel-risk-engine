@@ -6,7 +6,7 @@ from errors import RiskPolicyUnavailable
 from utils.pix_context import ADAPTIVE_CONTEXTUAL_EVIDENCE_SCHEMA_VERSION
 
 
-ADAPTIVE_POLICY_VERSION = "mvp-risk-adaptive-v3-r4"
+ADAPTIVE_POLICY_VERSION = "mvp-risk-adaptive-v3-r5"
 ADAPTIVE_HISTORY_WINDOWS_MINUTES = (1, 5, 15, 60, 1440)
 
 
@@ -29,7 +29,6 @@ class AdaptiveFamilyCaps:
 @dataclass(frozen=True)
 class PartyRiskThresholds:
     current_value_cents: int
-    elevated_attempt_count_5m: int
     microburst_count_1m: int
     total_60m_cents: int
     total_24h_cents: int
@@ -52,7 +51,6 @@ class PartyRiskThresholds:
 
 PF_RISK_THRESHOLDS = PartyRiskThresholds(
     current_value_cents=500_000,
-    elevated_attempt_count_5m=4,
     microburst_count_1m=4,
     total_60m_cents=1_500_000,
     total_24h_cents=5_000_000,
@@ -67,7 +65,6 @@ PF_RISK_THRESHOLDS = PartyRiskThresholds(
 
 PJ_RISK_THRESHOLDS = PartyRiskThresholds(
     current_value_cents=1_500_000,
-    elevated_attempt_count_5m=8,
     microburst_count_1m=6,
     total_60m_cents=5_000_000,
     total_24h_cents=15_000_000,
@@ -353,9 +350,6 @@ class PixAdaptiveRiskPolicy:
         if windows["1m"]["count"] >= thresholds.microburst_count_1m:
             signals.append("MICROBURST_1M")
             points = max(points, 25)
-        elif windows["5m"]["count"] >= thresholds.elevated_attempt_count_5m:
-            signals.append("ELEVATED_ATTEMPT_COUNT_5M")
-            points = max(points, 15)
 
         structured_aggregate = (
             windows["60m"]["count"] >= 10

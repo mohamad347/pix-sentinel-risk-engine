@@ -16,8 +16,8 @@ DATABASE_NAME = make_url(DATABASE_URL).database if DATABASE_URL else ""
 INTEGRATION_ENABLED = os.environ.get("PIX_INTEGRATION_TESTS") == "1"
 SAFE_TEST_DATABASE = bool(DATABASE_NAME and "test" in DATABASE_NAME.lower())
 V3_ENABLED = os.environ.get(
-    "PIX_RISK_POLICY", "mvp-risk-adaptive-v3-r4"
-) == "mvp-risk-adaptive-v3-r4"
+    "PIX_RISK_POLICY", "mvp-risk-adaptive-v3-r5"
+) == "mvp-risk-adaptive-v3-r5"
 
 pytestmark = pytest.mark.skipif(
     not (INTEGRATION_ENABLED and SAFE_TEST_DATABASE and V3_ENABLED),
@@ -187,7 +187,7 @@ def test_v3_postgresql_multisignal_snapshot_and_profile_are_prior_only():
     assert evidence["policy"]["families"]["profile"] == 15
     assert evidence["policy"]["families"]["relationship"] == 5
     assert evidence["policy"]["families"]["access"] == 20
-    assert _stored(current_id).policy_version == "mvp-risk-adaptive-v3-r4"
+    assert _stored(current_id).policy_version == "mvp-risk-adaptive-v3-r5"
 
 
 def test_v3_recipient_fanin_includes_current_attempt_at_exact_boundary():
