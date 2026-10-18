@@ -24,6 +24,7 @@ services:
       APP_ENV: test
       SERVICE_NAME: pix-sentinel-test
       INTERNAL_TOKEN: pix-test-token
+      PIX_RISK_POLICY: ${PIX_RISK_POLICY:-mvp-risk-experimental-v1}
     ports:
       - "3300:3000"
     depends_on:

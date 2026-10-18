@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy.exc import IntegrityError
 
 from controllers.base_controller import BaseController
-from controllers.pix_risk_policy import PixRiskPolicy
+from controllers.pix_policy_selector import build_risk_policy
 from dtos import PixAnalysisDTO
 from errors import InvalidPixPayload, PixAnalysisNotFound, PixTransactionConflict
 from repositories import PixTransactionRepository
@@ -14,6 +14,7 @@ from utils.pix_canonicalization import (
     parse_aware_datetime,
     pix_request_fingerprint,
 )
+from utils.pix_context import build_contextual_evidence
 from utils.pix_history import HISTORY_WINDOWS_MINUTES, build_evidence_snapshot
 
 
@@ -79,7 +80,7 @@ class PixTransactionController(BaseController):
     def __init__(self) -> None:
         super().__init__(__name__)
         self.pix_transaction_repository = PixTransactionRepository(self.context)
-        self.policy = PixRiskPolicy()
+        self.policy = build_risk_policy()
 
     def create(self, payload: dict) -> dict:
         transaction_data = validate_and_extract_pix_data(payload)
@@ -105,10 +106,33 @@ class PixTransactionController(BaseController):
 
             transaction_data["received_at"] = self.pix_transaction_repository.get_database_clock()
             transaction = self.pix_transaction_repository.create_transaction(**transaction_data)
-            history = self.pix_transaction_repository.get_payer_history(
-                transaction,
-                HISTORY_WINDOWS_MINUTES,
+            requires_context = getattr(
+                self.policy,
+                "requires_contextual_evidence",
+                False,
             )
+            if requires_context:
+                history = self.pix_transaction_repository.get_payer_history(
+                    transaction,
+                    HISTORY_WINDOWS_MINUTES,
+                    include_contextual=True,
+                )
+                contextual_evidence = build_contextual_evidence(
+                    current_payload=transaction.request_payload,
+                    admitted_at=transaction.received_at,
+                    prior_attempt_count=history["prior_attempt_count"],
+                    prior_device_attempt_count=history["prior_device_attempt_count"],
+                    prior_amount_median_cents=history["prior_amount_median_cents"],
+                    prior_history_span_seconds=history["prior_history_span_seconds"],
+                    distinct_counterparties=history["distinct_counterparties"],
+                    prior_geolocation=history["prior_geolocation"],
+                )
+            else:
+                history = self.pix_transaction_repository.get_payer_history(
+                    transaction,
+                    HISTORY_WINDOWS_MINUTES,
+                )
+                contextual_evidence = None
             evidence_snapshot = build_evidence_snapshot(
                 admitted_at=transaction.received_at,
                 prior_attempt_count=history["prior_attempt_count"],
@@ -116,6 +140,7 @@ class PixTransactionController(BaseController):
                     "prior_counterparty_attempt_count"
                 ],
                 windows=history["windows"],
+                contextual=contextual_evidence,
             )
             decision = self.policy.evaluate(transaction_data, evidence_snapshot)
             analysis = self.pix_transaction_repository.create_analysis(

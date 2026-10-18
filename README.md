@@ -118,12 +118,22 @@ A matriz executada de hipóteses, decisões e falhas está em
 
 ### Avaliação de uma política v2
 
-A política ativa continua sendo `mvp-risk-experimental-v1`. Não foi ativada nem
-criada uma v2 porque usar contraparte conhecida para suprimir 2FA também pode
-facilitar repetição para um destinatário comprometido, enquanto usar contraparte
-não observada para escalar risco aumentaria fricção sem dados de calibração.
-As evidências versionadas deixam essa comparação possível em uma próxima
-revisão, sem recalcular análises antigas.
+A política ativa continua sendo `mvp-risk-experimental-v1`. Existe uma candidata
+`mvp-risk-contextual-v2-candidate`, restrita a seleção explícita com
+`APP_ENV=test`. Ela calcula score interno 0–100 usando exposição, perfil,
+contraparte/diversidade e dispositivo; geo e PF/PJ permanecem diagnósticos.
+Replays antigos nunca são reavaliados.
+
+Para um ambiente de teste isolado:
+
+```powershell
+$env:PIX_RISK_POLICY = "mvp-risk-contextual-v2-candidate"
+docker compose -p pix-sentinel-tests -f docker-compose.test.yml up --build -d --force-recreate pix_test_api
+```
+
+Não use essa configuração como ativação produtiva. O relatório A/B2/C2 concluiu
+NO-GO para substituir V1; a amostra sintética é pequena e há divergências que
+precisam de revisão.
 
 | Intenção sintética | Contexto | Resultado v1 | Risco de erro observado |
 |---|---|---|---|
@@ -134,8 +144,8 @@ revisão, sem recalcular análises antigas.
 | Oito tentativas e R$ 30.000 em 5 minutos | Observada ou não observada | `rejected` | Pode rejeitar uma rajada legítima; combinação continua experimental |
 
 Esses rótulos descrevem intenção de cenários sintéticos, não verdade sobre
-fraudes reais. Como nenhuma v2 foi adotada, não há alegação de redução de falso
-positivo ou falso negativo.
+fraudes reais. A V2 não foi adotada e não há alegação de redução produtiva de
+falso positivo ou falso negativo.
 
 ## Contrato HTTP
 
@@ -232,13 +242,16 @@ Validação final em 18/10/2026, Windows e Docker Desktop, com a API em
 
 | Comando | Tipo | Resultado | Tempo pytest |
 |---|---|---:|---:|
-| `python -m pytest -q tests/unit` | Unitário | 69 passed | 6,76 s |
-| `python -m pytest -q tests/integration` | PostgreSQL/API | 28 passed | 10,86 s |
-| `python -m pytest -q` | Suíte de produto | 97 passed | 10,90 s |
+| `python -m pytest -q tests/unit` | Unitário | 91 passed | 2,55 s |
+| `python -m pytest -q` com opt-in e API V1 | Suíte de produto/PostgreSQL | 119 passed, 3 skipped | 8,46 s |
+| testes V2 e concorrência selecionados | PostgreSQL/API V2 | 6 passed | 4,32 s |
+| `python -m pytest -q` sem opt-in | Comando padrão | 91 passed, 31 skipped | 4,13 s |
 
-Todos terminaram sem falhas ou skips no modo completo. O único aviso é a API
-depreciada `declarative_base()` do SQLAlchemy. `pytest.ini` restringe a coleta a
-`tests/`; testes históricos guardados em documentos não entram na contagem.
+Todos terminaram sem falhas. Os três skips no modo integrado V1 são os fluxos
+que exigem seleção explícita da V2; os demais skips do comando padrão exigem
+PostgreSQL/API. O único aviso é a API depreciada `declarative_base()` do
+SQLAlchemy. `pytest.ini` restringe a coleta a `tests/`; testes históricos
+guardados em documentos não entram na contagem.
 
 Medições E2E sequenciais comparáveis, cada uma com 100 payloads sintéticos e
 pagadores distintos, obtiveram:
@@ -333,4 +346,6 @@ curl http://localhost:3000/pix/transaction/pix-000123 \
 - [Matriz de negócio e resiliência](docs/PIX_SENTINEL_MATRIZ_NEGOCIO_E_RESILIENCIA.md)
 - [Auditoria dos requisitos oficiais](docs/PIX_SENTINEL_AUDITORIA_REQUISITOS_OFICIAIS.md)
 - [Defesa de negócio e roteiro de sete minutos](docs/PIX_SENTINEL_DEFESA_E_ROTEIRO.md)
+- [Política contextual V2 candidata](docs/PIX_SENTINEL_POLITICA_V2_CANDIDATA.md)
+- [Resultados V1 × V2 × ablação](docs/PIX_SENTINEL_RELATORIO_V2_CANDIDATA.md)
 - [Organização do projeto](docs/como-o-projeto-e-organizado.md)

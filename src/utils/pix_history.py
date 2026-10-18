@@ -23,6 +23,7 @@ def build_evidence_snapshot(
     prior_attempt_count: int,
     prior_counterparty_attempt_count: int,
     windows: dict[int, dict[str, int]],
+    contextual: dict | None = None,
 ) -> dict:
     admitted_at_utc = admitted_at.astimezone(timezone.utc).isoformat(
         timespec="microseconds"
@@ -40,7 +41,7 @@ def build_evidence_snapshot(
         is_previously_observed = False
         is_unobserved_with_payer_history = True
 
-    return {
+    snapshot = {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "admitted_at": admitted_at_utc,
         "prior_attempt_count": int(prior_attempt_count),
@@ -60,3 +61,6 @@ def build_evidence_snapshot(
             for minutes, metrics in windows.items()
         },
     }
+    if contextual is not None:
+        snapshot["contextual"] = contextual
+    return snapshot

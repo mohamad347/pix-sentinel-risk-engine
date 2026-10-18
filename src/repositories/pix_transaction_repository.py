@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import and_, func, text
+from sqlalchemy import and_, case, func, text, tuple_
 from sqlalchemy.orm import contains_eager
 
 from database import Context
@@ -39,6 +39,7 @@ class PixTransactionRepository:
         self,
         transaction: PixTransaction,
         windows_minutes: tuple[int, ...],
+        include_contextual: bool = False,
     ) -> dict:
         is_prior_transaction = PixTransaction.id != transaction.id
         is_same_counterparty = and_(
@@ -47,6 +48,7 @@ class PixTransactionRepository:
             PixTransaction.payee_account_number == transaction.payee_account_number,
             PixTransaction.payee_document == transaction.payee_document,
         )
+        is_same_device = PixTransaction.source_device_id == transaction.source_device_id
         columns = [
             func.count(PixTransaction.id)
             .filter(is_prior_transaction)
@@ -55,12 +57,33 @@ class PixTransactionRepository:
             .filter(is_prior_transaction, is_same_counterparty)
             .label("prior_counterparty_attempt_count"),
         ]
+        if include_contextual:
+            columns.extend(
+                [
+                    func.count(PixTransaction.id)
+                    .filter(is_prior_transaction, is_same_device)
+                    .label("prior_device_attempt_count"),
+                    func.percentile_disc(0.5)
+                    .within_group(
+                        case(
+                            (is_prior_transaction, PixTransaction.amount_cents),
+                            else_=None,
+                        )
+                    )
+                    .label("prior_amount_median_cents"),
+                    func.min(PixTransaction.received_at)
+                    .filter(is_prior_transaction)
+                    .label("prior_first_received_at"),
+                    func.max(PixTransaction.received_at)
+                    .filter(is_prior_transaction)
+                    .label("prior_last_received_at"),
+                ]
+            )
         for minutes in windows_minutes:
             in_window = PixTransaction.received_at > transaction.received_at - timedelta(
                 minutes=minutes
             )
-            columns.extend(
-                [
+            window_columns = [
                     func.count(PixTransaction.id)
                     .filter(in_window)
                     .label(f"attempt_count_{minutes}m"),
@@ -68,8 +91,23 @@ class PixTransactionRepository:
                         func.sum(PixTransaction.amount_cents).filter(in_window),
                         0,
                     ).label(f"amount_cents_{minutes}m"),
-                ]
-            )
+            ]
+            if include_contextual:
+                window_columns.append(
+                    func.count(
+                        func.distinct(
+                            tuple_(
+                                PixTransaction.payee_participant,
+                                PixTransaction.payee_branch,
+                                PixTransaction.payee_account_number,
+                                PixTransaction.payee_document,
+                            )
+                        )
+                    )
+                    .filter(in_window)
+                    .label(f"distinct_counterparties_{minutes}m"),
+                )
+            columns.extend(window_columns)
 
         row = (
             self.session.query(*columns)
@@ -82,7 +120,7 @@ class PixTransactionRepository:
             .one()
         )
         values = row._mapping
-        return {
+        result = {
             "prior_attempt_count": int(values["prior_attempt_count"]),
             "prior_counterparty_attempt_count": int(
                 values["prior_counterparty_attempt_count"]
@@ -94,6 +132,59 @@ class PixTransactionRepository:
                 }
                 for minutes in windows_minutes
             },
+        }
+        if include_contextual:
+            first_received_at = values["prior_first_received_at"]
+            last_received_at = values["prior_last_received_at"]
+            result.update(
+                {
+                    "prior_device_attempt_count": int(
+                        values["prior_device_attempt_count"]
+                    ),
+                    "prior_amount_median_cents": (
+                        int(values["prior_amount_median_cents"])
+                        if values["prior_amount_median_cents"] is not None
+                        else None
+                    ),
+                    "prior_history_span_seconds": (
+                        int((last_received_at - first_received_at).total_seconds())
+                        if first_received_at is not None and last_received_at is not None
+                        else 0
+                    ),
+                    "prior_geolocation": self._get_latest_prior_geolocation(transaction),
+                    "distinct_counterparties": {
+                        minutes: int(values[f"distinct_counterparties_{minutes}m"])
+                        for minutes in windows_minutes
+                    },
+                }
+            )
+        return result
+
+    def _get_latest_prior_geolocation(self, transaction: PixTransaction) -> dict | None:
+        if transaction.request_payload.get("source", {}).get("geolocation") is None:
+            return None
+        geolocation = PixTransaction.request_payload["source"]["geolocation"]
+        row = (
+            self.session.query(PixTransaction.request_payload, PixTransaction.received_at)
+            .filter(
+                PixTransaction.payer_document == transaction.payer_document,
+                PixTransaction.payer_branch == transaction.payer_branch,
+                PixTransaction.payer_account_number == transaction.payer_account_number,
+                PixTransaction.id != transaction.id,
+                PixTransaction.received_at <= transaction.received_at,
+                func.jsonb_typeof(geolocation) == "object",
+            )
+            .order_by(PixTransaction.received_at.desc(), PixTransaction.id.desc())
+            .limit(1)
+            .one_or_none()
+        )
+        if row is None:
+            return None
+        coordinates = row.request_payload["source"]["geolocation"]
+        return {
+            "latitude": coordinates.get("latitude"),
+            "longitude": coordinates.get("longitude"),
+            "received_at": row.received_at,
         }
 
     def create_analysis(
