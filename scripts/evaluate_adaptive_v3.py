@@ -49,7 +49,7 @@ def _base() -> dict:
             "1440m": {"attempt_count": 1, "amount_cents": 10_000},
         },
         "contextual": {
-            "schema_version": "pix-context-v3-r2-v2",
+            "schema_version": "pix-context-v3-r4-v4",
             "profile": {
                 "observation": "observed",
                 "prior_attempt_count": 8,
@@ -83,6 +83,10 @@ def _base() -> dict:
                 "destination_account_age_days": 365,
             },
             "party_types": {"payer": "pf", "payee": "pf"},
+            "account_context": {
+                "source_account_age_days": 365,
+                "is_self_transfer": False,
+            },
         },
     }
 
@@ -271,7 +275,13 @@ def scenarios() -> list[dict]:
                     "60m": {"attempt_count": 8, "amount_cents": 3_200_000},
                     "1440m": {"attempt_count": 8, "amount_cents": 3_200_000},
                 },
-                "contextual": {"party_types": {"payer": "pj", "payee": "pj"}},
+                "contextual": {
+                    "profile": {
+                        "median_amount_cents": 400_000,
+                        "p90_amount_cents": 450_000,
+                    },
+                    "party_types": {"payer": "pj", "payee": "pj"},
+                },
             },
         },
         {

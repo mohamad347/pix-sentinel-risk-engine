@@ -23,16 +23,16 @@ def test_fixed_b2_c2_c3_experiment_compares_all_policies_without_recalibrating_c
     assert result["metrics"]["C3"]["critical_rejection_downgrades_r2_vs_v1"] == 0
 
 
-def test_adaptive_v3_characterization_expands_coverage_and_keeps_known_false_positive():
+def test_adaptive_v3_characterization_resolves_pj_false_rejection_without_friction():
     result = run_v3()
     rows = {row["id"]: row for row in result["results"]}
 
     assert result["role"] == "synthetic_behavior_characterization_not_independent_holdout"
-    assert result["matches_intention"] == {"v1": 3, "v2_r2": 4, "v3": 9}
+    assert result["matches_intention"] == {"v1": 3, "v2_r2": 4, "v3": 10}
     assert rows["A05"]["v3_score"] == 57
     assert rows["A05"]["v3_status"] == "rejected"
     assert rows["A06"]["v3_score"] == 36
-    assert rows["A08"]["v3_status"] == "rejected"
+    assert rows["A08"]["v3_status"] == "approved"
     assert rows["A08"]["expected"] == "approved"
     assert rows["A09"]["v3_status"] == "rejected"
     assert rows["A10"]["v3_status"] == "two_factor_required"

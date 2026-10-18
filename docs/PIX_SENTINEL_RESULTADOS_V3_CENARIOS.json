@@ -2,7 +2,7 @@
   "matches_intention": {
     "v1": 3,
     "v2_r2": 4,
-    "v3": 9
+    "v3": 10
   },
   "results": [
     {
@@ -213,21 +213,21 @@
         "device": 0,
         "exposure_velocity": 60,
         "geolocation": 0,
-        "profile": 15
+        "profile": 0
       },
-      "v2_r2_score": 75,
+      "v2_r2_score": 60,
       "v2_r2_status": "rejected",
       "v3_challenge": null,
       "v3_families": {
         "access": 0,
         "beneficiary_network": 0,
-        "exposure_velocity": 60,
-        "profile": 15,
+        "exposure_velocity": 15,
+        "profile": 0,
         "relationship": 0,
         "temporal": 0
       },
-      "v3_score": 75,
-      "v3_status": "rejected"
+      "v3_score": 15,
+      "v3_status": "approved"
     },
     {
       "description": "convergência crítica de quatro famílias",

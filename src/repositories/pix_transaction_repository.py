@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import and_, case, func, text, tuple_
+from sqlalchemy import and_, case, func, or_, text, tuple_
 from sqlalchemy.orm import contains_eager
 
 from database import Context
@@ -99,9 +99,9 @@ class PixTransactionRepository:
                 (is_profile_eligible, PixTransaction.amount_cents),
                 else_=None,
             )
-            utc_hour = func.extract(
+            brazil_hour = func.extract(
                 "hour",
-                func.timezone("UTC", PixTransaction.transaction_at),
+                func.timezone("America/Sao_Paulo", PixTransaction.transaction_at),
             )
             columns.extend(
                 [
@@ -115,7 +115,10 @@ class PixTransactionRepository:
                     .within_group(profile_amount)
                     .label("prior_amount_p90_cents"),
                     func.count(PixTransaction.id)
-                    .filter(is_profile_eligible, utc_hour < 6)
+                    .filter(
+                        is_profile_eligible,
+                        or_(brazil_hour >= 20, brazil_hour < 6),
+                    )
                     .label("prior_nighttime_attempt_count"),
                 ]
             )
@@ -277,7 +280,7 @@ class PixTransactionRepository:
                 .filter(is_prior, same_beneficiary)
                 .label("prior_attempt_count"),
                 func.count(PixTransaction.id)
-                .filter(is_prior, in_60m, same_beneficiary)
+                .filter(in_60m, same_beneficiary)
                 .label("attempt_count_60m"),
                 func.count(
                     func.distinct(
@@ -288,7 +291,7 @@ class PixTransactionRepository:
                         )
                     )
                 )
-                .filter(is_prior, in_60m, same_beneficiary)
+                .filter(in_60m, same_beneficiary)
                 .label("distinct_payer_count_60m"),
                 func.count(
                     func.distinct(
@@ -299,7 +302,7 @@ class PixTransactionRepository:
                         )
                     )
                 )
-                .filter(is_prior, in_60m, same_device)
+                .filter(in_60m, same_device)
                 .label("device_distinct_payer_count_60m"),
                 func.count(
                     func.distinct(
@@ -310,7 +313,7 @@ class PixTransactionRepository:
                         )
                     )
                 )
-                .filter(is_prior, in_60m, same_ip)
+                .filter(in_60m, same_ip)
                 .label("ip_distinct_payer_count_60m"),
             )
             .filter(PixTransaction.received_at <= transaction.received_at)

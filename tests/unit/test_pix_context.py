@@ -1,6 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from utils.pix_context import (
+    BRAZIL_TIMEZONE,
+    _nighttime_observation,
     build_adaptive_contextual_evidence,
     build_contextual_evidence,
     classify_party_type,
@@ -15,8 +19,14 @@ def payload(*, document="12345678901", device="device-new", geolocation=None):
     if geolocation is not None:
         source["geolocation"] = geolocation
     return {
-        "source_account": {"owner": {"document_number": document}},
-        "destination_account": {"owner": {"document_number": "00ABC123450001"}},
+        "source_account": {
+            "opening_date": "2026-10-01T10:00:00-03:00",
+            "owner": {"document_number": document},
+        },
+        "destination_account": {
+            "opening_date": "2026-10-01T10:00:00-03:00",
+            "owner": {"document_number": "00ABC123450001"},
+        },
         "source": source,
     }
 
@@ -149,6 +159,10 @@ def test_adaptive_context_derives_access_temporal_and_network_without_raw_pii():
     }
     assert context["relationship"]["distinct_counterparty_count_60m"] == 4
     assert context["beneficiary"]["destination_account_age_days"] == 2
+    assert context["account_context"] == {
+        "source_account_age_days": 17,
+        "is_self_transfer": False,
+    }
     assert context["temporal"]["transaction_clock_skew_seconds"] == 1800
     assert context["temporal"]["geolocation"]["observation"] == "observed"
     assert context["temporal"]["geolocation"]["speed_kmh"] > 700
@@ -156,3 +170,55 @@ def test_adaptive_context_derives_access_temporal_and_network_without_raw_pii():
     assert "198.51.100.23" not in serialized
     assert "device-new" not in serialized
     assert "12345678901" not in serialized
+
+
+def test_adaptive_context_uses_brazil_time_and_detects_self_transfer():
+    current = payload(document="123.456.789-09")
+    current["transaction_date"] = "2026-10-18T02:00:00-03:00"
+    current["source_account"]["opening_date"] = "2026-10-17T10:00:00-03:00"
+    current["destination_account"]["owner"]["document_number"] = "12345678909"
+
+    context = build_adaptive_contextual_evidence(
+        current_payload=current,
+        admitted_at=datetime(2026, 10, 18, 5, 0, tzinfo=timezone.utc),
+        prior_attempt_count=5,
+        prior_counterparty_attempt_count=0,
+        prior_device_attempt_count=5,
+        prior_ip_attempt_count=5,
+        prior_channel_attempt_count=5,
+        prior_amount_median_cents=50_000,
+        prior_amount_p90_cents=100_000,
+        prior_history_span_seconds=172_800,
+        profile_attempt_count=5,
+        prior_nighttime_attempt_count=0,
+        pair_attempt_count_15m=1,
+        distinct_counterparties={60: 1},
+        distinct_devices={60: 1},
+        distinct_ips={60: 1},
+        prior_geolocation=None,
+        beneficiary_context={
+            "global_observation": "not_observed",
+            "distinct_payer_count_60m": 0,
+            "attempt_count_60m": 0,
+        },
+        access_network_context={
+            "device_distinct_payer_count_60m": 1,
+            "ip_distinct_payer_count_60m": 1,
+        },
+    )
+
+    assert context["temporal"]["nighttime_observation"] == "unusual"
+    assert context["account_context"] == {
+        "source_account_age_days": 0,
+        "is_self_transfer": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("local_hour", "expected"),
+    ((19, "not_nighttime"), (20, "unusual"), (5, "unusual"), (6, "not_nighttime")),
+)
+def test_nighttime_window_is_20_to_06_in_brazil(local_hour, expected):
+    transaction_at = datetime(2026, 10, 18, local_hour, tzinfo=BRAZIL_TIMEZONE)
+
+    assert _nighttime_observation(transaction_at, 5, 0) == expected

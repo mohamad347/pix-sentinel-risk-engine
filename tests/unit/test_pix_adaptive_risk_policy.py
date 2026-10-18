@@ -25,6 +25,8 @@ def evidence(
     access=None,
     temporal=None,
     beneficiary=None,
+    party_types=None,
+    account_context=None,
 ):
     default_windows = {
         "1m": {"attempt_count": 1, "amount_cents": 10_000},
@@ -39,7 +41,7 @@ def evidence(
         "counterparty": {"observation": counterparty},
         "windows": windows or default_windows,
         "contextual": {
-            "schema_version": "pix-context-v3-r2-v2",
+            "schema_version": "pix-context-v3-r4-v4",
             "profile": profile
             or {
                 "observation": "observed",
@@ -77,7 +79,12 @@ def evidence(
                 "attempt_count_60m": 1,
                 "destination_account_age_days": 365,
             },
-            "party_types": {"payer": "pf", "payee": "pf"},
+            "party_types": party_types or {"payer": "pf", "payee": "pf"},
+            "account_context": account_context
+            or {
+                "source_account_age_days": 365,
+                "is_self_transfer": False,
+            },
         },
     }
 
@@ -104,7 +111,7 @@ def test_low_risk_habitual_payment_is_approved_with_six_capped_families():
     }
 
 
-def test_microburst_and_structuring_are_explainable_but_not_double_counted():
+def test_exposure_uses_the_strongest_non_redundant_signal_per_dimension():
     windows = {
         "1m": {"attempt_count": 4, "amount_cents": 400_000},
         "5m": {"attempt_count": 7, "amount_cents": 700_000},
@@ -116,12 +123,53 @@ def test_microburst_and_structuring_are_explainable_but_not_double_counted():
     decision = evaluate(100_000, evidence(windows=windows))
     policy = decision["evidence_snapshot"]["policy"]
 
-    assert policy["families"]["exposure_velocity"] == 25
-    assert policy["risk_score"] == 25
+    assert policy["families"]["exposure_velocity"] == 35
+    assert policy["risk_score"] == 35
     assert decision["status"] == "two_factor_required"
     assert {"MICROBURST_1M", "STRUCTURED_AGGREGATE_60M"} <= set(
         policy["triggered_signals"]
     )
+    assert "ELEVATED_ATTEMPT_COUNT_5M" not in policy["triggered_signals"]
+    assert "ELEVATED_ATTEMPT_TOTAL_60M" not in policy["triggered_signals"]
+
+
+@pytest.mark.parametrize(
+    ("payer_type", "count_1m", "count_5m", "expected_score", "expected_signal"),
+    (
+        ("pf", 1, 4, 0, None),
+        ("pf", 4, 4, 25, "MICROBURST_1M"),
+        ("pj", 1, 8, 0, None),
+        ("pj", 6, 8, 25, "MICROBURST_1M"),
+    ),
+)
+def test_only_microburst_scores_short_window_frequency_with_pf_pj_thresholds(
+    payer_type, count_1m, count_5m, expected_score, expected_signal
+):
+    windows = {
+        "1m": {"attempt_count": count_1m, "amount_cents": 10_000},
+        "5m": {"attempt_count": count_5m, "amount_cents": 20_000},
+        "15m": {"attempt_count": count_5m, "amount_cents": 20_000},
+        "60m": {"attempt_count": count_5m, "amount_cents": 20_000},
+        "1440m": {"attempt_count": count_5m, "amount_cents": 20_000},
+    }
+
+    decision = evaluate(
+        snapshot=evidence(
+            windows=windows,
+            party_types={"payer": payer_type, "payee": "pf"},
+        )
+    )
+    policy = decision["evidence_snapshot"]["policy"]
+
+    assert policy["families"]["exposure_velocity"] == expected_score
+    if expected_signal is None:
+        assert decision["status"] == "approved"
+        assert "MICROBURST_1M" not in policy["triggered_signals"]
+    else:
+        assert expected_signal in policy["triggered_signals"]
+        assert decision["status"] == (
+            "two_factor_required" if expected_score >= 25 else "approved"
+        )
 
 
 def test_impossible_geo_velocity_with_access_takeover_is_rejected():
@@ -375,3 +423,184 @@ def test_device_shared_across_three_payers_is_a_global_access_signal():
     assert "DEVICE_SHARED_ACROSS_PAYERS_60M" in decision["evidence_snapshot"][
         "policy"
     ]["triggered_signals"]
+
+
+def test_pf_and_pj_use_different_absolute_exposure_thresholds():
+    insufficient_profile = {
+        "observation": "insufficient_history",
+        "prior_attempt_count": 0,
+        "history_span_seconds": 0,
+        "median_amount_cents": None,
+        "p90_amount_cents": None,
+    }
+    pf = evaluate(600_000, evidence(profile=insufficient_profile))
+    pj = evaluate(
+        600_000,
+        evidence(
+            profile=insufficient_profile,
+            party_types={"payer": "pj", "payee": "pf"},
+        ),
+    )
+
+    assert pf["status"] == "two_factor_required"
+    assert "ELEVATED_CURRENT_VALUE" in pf["evidence_snapshot"]["policy"][
+        "triggered_signals"
+    ]
+    assert pj["status"] == "approved"
+    assert "ELEVATED_CURRENT_VALUE" not in pj["evidence_snapshot"]["policy"][
+        "triggered_signals"
+    ]
+
+
+def test_pj_fan_out_and_pj_recipient_fan_in_use_business_thresholds():
+    pj_payer = evaluate(
+        snapshot=evidence(
+            relationship={
+                "prior_counterparty_attempt_count": 0,
+                "pair_attempt_count_15m": 1,
+                "distinct_counterparty_count_60m": 5,
+            },
+            party_types={"payer": "pj", "payee": "pf"},
+        )
+    )
+    pj_payee = evaluate(
+        snapshot=evidence(
+            beneficiary={
+                "global_observation": "observed",
+                "distinct_payer_count_60m": 6,
+                "attempt_count_60m": 8,
+                "destination_account_age_days": 365,
+            },
+            party_types={"payer": "pf", "payee": "pj"},
+        )
+    )
+
+    assert "ELEVATED_FAN_OUT_60M" not in pj_payer["evidence_snapshot"]["policy"][
+        "triggered_signals"
+    ]
+    assert "RECIPIENT_FAN_IN_60M" not in pj_payee["evidence_snapshot"]["policy"][
+        "triggered_signals"
+    ]
+
+
+def test_self_transfer_does_not_score_recipient_novelty_or_young_destination():
+    decision = evaluate(
+        400_000,
+        evidence(
+            counterparty="not_observed",
+            beneficiary={
+                "global_observation": "not_observed",
+                "distinct_payer_count_60m": 0,
+                "attempt_count_60m": 0,
+                "destination_account_age_days": 1,
+            },
+            account_context={
+                "source_account_age_days": 365,
+                "is_self_transfer": True,
+            },
+        ),
+    )
+
+    policy = decision["evidence_snapshot"]["policy"]
+    assert policy["families"]["relationship"] == 0
+    assert policy["families"]["beneficiary_network"] == 0
+    assert "NEW_COUNTERPARTY" not in policy["triggered_signals"]
+    assert "RECIPIENT_FIRST_SYSTEM_OBSERVATION" not in policy["triggered_signals"]
+    assert "YOUNG_DESTINATION_ACCOUNT" not in policy["triggered_signals"]
+
+
+@pytest.mark.parametrize(
+    ("payer_type", "amount"),
+    (("pf", 300_000), ("pj", 1_000_000), ("unknown", 300_000)),
+)
+def test_first_observation_of_young_source_account_deterministically_requires_2fa(
+    payer_type, amount
+):
+    decision = evaluate(
+        amount,
+        evidence(
+            prior_count=0,
+            counterparty="insufficient_history",
+            profile={
+                "observation": "insufficient_history",
+                "prior_attempt_count": 0,
+                "history_span_seconds": 0,
+                "median_amount_cents": None,
+                "p90_amount_cents": None,
+            },
+            access={
+                "device_observation": "insufficient_history",
+                "ip_observation": "insufficient_history",
+                "channel_observation": "insufficient_history",
+                "distinct_device_count_60m": 1,
+                "distinct_ip_count_60m": 1,
+                "device_distinct_payer_count_60m": 1,
+                "ip_distinct_payer_count_60m": 1,
+            },
+            beneficiary={
+                "global_observation": "observed",
+                "distinct_payer_count_60m": 1,
+                "attempt_count_60m": 1,
+                "destination_account_age_days": 365,
+            },
+            party_types={"payer": payer_type, "payee": "pf"},
+            account_context={
+                "source_account_age_days": 5,
+                "is_self_transfer": False,
+            },
+        ),
+    )
+
+    policy = decision["evidence_snapshot"]["policy"]
+    assert decision["status"] == "two_factor_required"
+    assert decision["metadata"]["reason_code"] == "ADAPTIVE_COLD_START_VERIFICATION"
+    assert policy["cold_start_verification_safeguard"] is True
+    assert "FIRST_OBSERVED_YOUNG_SOURCE_ACCOUNT" in policy["triggered_signals"]
+
+
+def test_enhanced_facial_liveness_is_never_recommended_for_pj():
+    takeover_access = {
+        "device_observation": "newly_observed",
+        "ip_observation": "newly_observed",
+        "channel_observation": "observed",
+        "distinct_device_count_60m": 1,
+        "distinct_ip_count_60m": 1,
+        "device_distinct_payer_count_60m": 1,
+        "ip_distinct_payer_count_60m": 1,
+    }
+    pf = evaluate(
+        200_000,
+        evidence(access=takeover_access, party_types={"payer": "pf", "payee": "pf"}),
+    )
+    pj = evaluate(
+        200_000,
+        evidence(access=takeover_access, party_types={"payer": "pj", "payee": "pf"}),
+    )
+
+    assert pf["metadata"]["challenge"]["type"] == "facial_liveness"
+    assert pj["metadata"]["challenge"]["type"] == "push_confirmation"
+
+
+def test_new_device_ip_and_counterparty_require_verification_at_score_23():
+    decision = evaluate(
+        snapshot=evidence(
+            counterparty="not_observed",
+            access={
+                "device_observation": "newly_observed",
+                "ip_observation": "newly_observed",
+                "channel_observation": "observed",
+                "distinct_device_count_60m": 1,
+                "distinct_ip_count_60m": 1,
+                "device_distinct_payer_count_60m": 1,
+                "ip_distinct_payer_count_60m": 1,
+            },
+        )
+    )
+
+    policy = decision["evidence_snapshot"]["policy"]
+    assert policy["risk_score"] == 23
+    assert policy["access_relationship_verification_safeguard"] is True
+    assert decision["status"] == "two_factor_required"
+    assert decision["metadata"]["reason_code"] == (
+        "ADAPTIVE_ACCESS_RELATIONSHIP_VERIFICATION"
+    )

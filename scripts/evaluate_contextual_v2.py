@@ -155,7 +155,7 @@ def adaptive_evidence(case: Scenario) -> dict:
         "1440m": {"attempt_count": case.count_5m, "amount_cents": case.amount_60m},
     }
     snapshot["contextual"] = {
-        "schema_version": "pix-context-v3-r2-v2",
+        "schema_version": "pix-context-v3-r4-v4",
         "profile": {
             "observation": case.profile,
             "prior_attempt_count": case.profile_count,
@@ -206,6 +206,10 @@ def adaptive_evidence(case: Scenario) -> dict:
             "destination_account_age_days": 365,
         },
         "party_types": {"payer": case.payer_type, "payee": case.payee_type},
+        "account_context": {
+            "source_account_age_days": 365,
+            "is_self_transfer": False,
+        },
     }
     return snapshot
 

@@ -1,12 +1,12 @@
 from copy import deepcopy
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, fields
 import math
 
 from errors import RiskPolicyUnavailable
 from utils.pix_context import ADAPTIVE_CONTEXTUAL_EVIDENCE_SCHEMA_VERSION
 
 
-ADAPTIVE_POLICY_VERSION = "mvp-risk-adaptive-v3-r2"
+ADAPTIVE_POLICY_VERSION = "mvp-risk-adaptive-v3-r4"
 ADAPTIVE_HISTORY_WINDOWS_MINUTES = (1, 5, 15, 60, 1440)
 
 
@@ -27,6 +27,61 @@ class AdaptiveFamilyCaps:
 
 
 @dataclass(frozen=True)
+class PartyRiskThresholds:
+    current_value_cents: int
+    elevated_attempt_count_5m: int
+    microburst_count_1m: int
+    total_60m_cents: int
+    total_24h_cents: int
+    critical_total_5m_cents: int
+    elevated_fan_out_60m: int
+    critical_fan_out_60m: int
+    recipient_fan_in_payers_60m: int
+    recipient_fan_in_attempts_60m: int
+    young_destination_amount_cents: int
+    cold_start_amount_cents: int
+
+    def __post_init__(self) -> None:
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise RiskPolicyUnavailable()
+        if self.elevated_fan_out_60m >= self.critical_fan_out_60m:
+            raise RiskPolicyUnavailable()
+
+
+PF_RISK_THRESHOLDS = PartyRiskThresholds(
+    current_value_cents=500_000,
+    elevated_attempt_count_5m=4,
+    microburst_count_1m=4,
+    total_60m_cents=1_500_000,
+    total_24h_cents=5_000_000,
+    critical_total_5m_cents=3_000_000,
+    elevated_fan_out_60m=4,
+    critical_fan_out_60m=8,
+    recipient_fan_in_payers_60m=5,
+    recipient_fan_in_attempts_60m=8,
+    young_destination_amount_cents=300_000,
+    cold_start_amount_cents=300_000,
+)
+
+PJ_RISK_THRESHOLDS = PartyRiskThresholds(
+    current_value_cents=1_500_000,
+    elevated_attempt_count_5m=8,
+    microburst_count_1m=6,
+    total_60m_cents=5_000_000,
+    total_24h_cents=15_000_000,
+    critical_total_5m_cents=10_000_000,
+    elevated_fan_out_60m=8,
+    critical_fan_out_60m=15,
+    recipient_fan_in_payers_60m=15,
+    recipient_fan_in_attempts_60m=25,
+    young_destination_amount_cents=1_000_000,
+    cold_start_amount_cents=1_000_000,
+)
+
+
+@dataclass(frozen=True)
 class AdaptiveRiskConfig:
     policy_version: str = ADAPTIVE_POLICY_VERSION
     two_factor_score: int = 25
@@ -39,7 +94,11 @@ class AdaptiveRiskConfig:
     critical_geolocation_speed_kmh: int = 1_000
     simultaneous_geolocation_seconds: int = 60
     convergent_min_families: int = 4
+    cold_start_max_account_age_days: int = 30
     family_caps: AdaptiveFamilyCaps = AdaptiveFamilyCaps()
+    pf_thresholds: PartyRiskThresholds = PF_RISK_THRESHOLDS
+    pj_thresholds: PartyRiskThresholds = PJ_RISK_THRESHOLDS
+    unknown_thresholds: PartyRiskThresholds = PF_RISK_THRESHOLDS
 
     def __post_init__(self) -> None:
         if not isinstance(self.policy_version, str) or not self.policy_version:
@@ -55,6 +114,7 @@ class AdaptiveRiskConfig:
             "critical_geolocation_speed_kmh",
             "simultaneous_geolocation_seconds",
             "convergent_min_families",
+            "cold_start_max_account_age_days",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -67,6 +127,9 @@ class AdaptiveRiskConfig:
             raise RiskPolicyUnavailable()
         if not isinstance(self.family_caps, AdaptiveFamilyCaps):
             raise RiskPolicyUnavailable()
+        for threshold_name in ("pf_thresholds", "pj_thresholds", "unknown_thresholds"):
+            if not isinstance(getattr(self, threshold_name), PartyRiskThresholds):
+                raise RiskPolicyUnavailable()
 
 
 DEFAULT_ADAPTIVE_RISK_CONFIG = AdaptiveRiskConfig()
@@ -93,15 +156,36 @@ class PixAdaptiveRiskPolicy:
         amount = self._positive_int(transaction_data.get("amount_cents"))
         contextual = self._contextual(evidence_snapshot)
         prior_count = self._non_negative_int(evidence_snapshot.get("prior_attempt_count"))
+        party_types = self._party_types(contextual)
+        account_context = self._account_context(contextual)
+        payer_thresholds = self._thresholds(party_types["payer"])
+        payee_thresholds = self._thresholds(party_types["payee"])
 
-        exposure, exposure_signals, critical_burst = self._exposure(evidence_snapshot, amount)
-        profile, profile_signals, profile_ratio = self._profile(contextual, amount)
+        exposure, exposure_signals, critical_burst = self._exposure(
+            evidence_snapshot, amount, payer_thresholds
+        )
+        profile, profile_signals, profile_ratio = self._profile(
+            contextual,
+            amount,
+            prior_count,
+            account_context,
+            payer_thresholds,
+        )
         relationship, relationship_signals = self._relationship(
-            evidence_snapshot, contextual, prior_count
+            evidence_snapshot,
+            contextual,
+            prior_count,
+            account_context,
+            payer_thresholds,
         )
         access, access_signals = self._access(contextual, prior_count)
         temporal, temporal_signals, critical_geolocation = self._temporal(contextual)
-        beneficiary, beneficiary_signals = self._beneficiary(contextual, amount)
+        beneficiary, beneficiary_signals = self._beneficiary(
+            contextual,
+            amount,
+            account_context,
+            payee_thresholds,
+        )
 
         families = {
             "exposure_velocity": exposure,
@@ -123,6 +207,12 @@ class PixAdaptiveRiskPolicy:
         )
 
         critical_geolocation_safeguard = critical_geolocation and access >= 10
+        cold_start_verification_safeguard = (
+            "FIRST_OBSERVED_YOUNG_SOURCE_ACCOUNT" in profile_signals
+        )
+        access_relationship_verification_safeguard = (
+            access >= 18 and (relationship > 0 or beneficiary > 0)
+        )
         convergent_critical_risk = (
             risk_score >= self.config.reject_score
             and active_family_count >= self.config.convergent_min_families
@@ -148,6 +238,14 @@ class PixAdaptiveRiskPolicy:
             status = "rejected"
             reason_code = "ADAPTIVE_CONVERGENT_CRITICAL_RISK"
             reason_description = "Several independent risk contexts exceeded the critical safeguard."
+        elif cold_start_verification_safeguard:
+            status = "two_factor_required"
+            reason_code = "ADAPTIVE_COLD_START_VERIFICATION"
+            reason_description = "A material first observation from a recently opened source account requires verification."
+        elif access_relationship_verification_safeguard:
+            status = "two_factor_required"
+            reason_code = "ADAPTIVE_ACCESS_RELATIONSHIP_VERIFICATION"
+            reason_description = "An anomalous access coincided with a new or risky payment relationship."
         elif risk_score >= self.config.two_factor_score:
             status = "two_factor_required"
             reason_code = "ADAPTIVE_VERIFICATION_RECOMMENDED"
@@ -164,7 +262,9 @@ class PixAdaptiveRiskPolicy:
             "reason_description": reason_description,
         }
         if status == "two_factor_required":
-            metadata["challenge"] = self._recommended_challenge(families)
+            metadata["challenge"] = self._recommended_challenge(
+                families, party_types["payer"]
+            )
 
         decision_evidence = deepcopy(evidence_snapshot)
         decision_evidence["policy"] = {
@@ -176,7 +276,16 @@ class PixAdaptiveRiskPolicy:
                 for field in fields(self.config.family_caps)
             },
             "profile_ratio_basis_points": profile_ratio,
+            "party_types": party_types,
+            "applied_party_thresholds": {
+                "payer": asdict(payer_thresholds),
+                "payee": asdict(payee_thresholds),
+            },
             "critical_burst_safeguard": critical_burst,
+            "cold_start_verification_safeguard": cold_start_verification_safeguard,
+            "access_relationship_verification_safeguard": (
+                access_relationship_verification_safeguard
+            ),
             "critical_geolocation_safeguard": critical_geolocation_safeguard,
             "convergent_critical_risk": convergent_critical_risk,
             "active_risk_family_count": active_family_count,
@@ -191,13 +300,15 @@ class PixAdaptiveRiskPolicy:
         }
 
     @staticmethod
-    def _recommended_challenge(families: dict[str, int]) -> dict[str, str]:
+    def _recommended_challenge(
+        families: dict[str, int], payer_type: str
+    ) -> dict[str, str]:
         identity_or_access_takeover = families["access"] >= 18 and (
             families["profile"] >= 10
             or families["relationship"] >= 12
             or families["temporal"] >= 15
         )
-        if identity_or_access_takeover:
+        if identity_or_access_takeover and payer_type == "pf":
             return {
                 "type": "facial_liveness",
                 "level": "enhanced",
@@ -209,7 +320,12 @@ class PixAdaptiveRiskPolicy:
             "status": "recommended",
         }
 
-    def _exposure(self, evidence: dict, amount: int) -> tuple[int, list[str], bool]:
+    def _exposure(
+        self,
+        evidence: dict,
+        amount: int,
+        thresholds: PartyRiskThresholds,
+    ) -> tuple[int, list[str], bool]:
         windows = {
             name: {
                 "count": self._metric(evidence, name, "attempt_count"),
@@ -217,41 +333,70 @@ class PixAdaptiveRiskPolicy:
             }
             for name in ("1m", "5m", "15m", "60m", "1440m")
         }
-        signals = []
-        points = 0
-        if amount >= 500_000:
-            signals.append("ELEVATED_CURRENT_VALUE")
-            points = 25
-        if windows["1m"]["count"] >= 4:
-            signals.append("MICROBURST_1M")
-            points = max(points, 25)
-        if windows["5m"]["count"] >= 4:
-            signals.append("ELEVATED_ATTEMPT_COUNT_5M")
-            points = max(points, 25)
-        if windows["60m"]["amount"] >= 1_500_000:
-            signals.append("ELEVATED_ATTEMPT_TOTAL_60M")
-            points = max(points, 25)
-        if windows["1440m"]["amount"] >= 5_000_000:
-            signals.append("ELEVATED_ATTEMPT_TOTAL_24H")
-            points = max(points, 25)
-        if windows["60m"]["count"] >= 10 and windows["60m"]["amount"] >= 1_500_000:
-            signals.append("STRUCTURED_AGGREGATE_60M")
-            points = max(points, 25)
-
         critical_burst = (
-            windows["5m"]["count"] >= 8 and windows["5m"]["amount"] >= 3_000_000
+            windows["5m"]["count"] >= 8
+            and windows["5m"]["amount"] >= thresholds.critical_total_5m_cents
         )
         if critical_burst:
-            signals.append("CRITICAL_BURST_5M")
-            points = self.config.family_caps.exposure_velocity
+            return (
+                self.config.family_caps.exposure_velocity,
+                ["CRITICAL_BURST_5M"],
+                True,
+            )
+
+        signals = []
+        points = 0
+        if amount >= thresholds.current_value_cents:
+            signals.append("ELEVATED_CURRENT_VALUE")
+            points = 25
+
+        if windows["1m"]["count"] >= thresholds.microburst_count_1m:
+            signals.append("MICROBURST_1M")
+            points = max(points, 25)
+        elif windows["5m"]["count"] >= thresholds.elevated_attempt_count_5m:
+            signals.append("ELEVATED_ATTEMPT_COUNT_5M")
+            points = max(points, 15)
+
+        structured_aggregate = (
+            windows["60m"]["count"] >= 10
+            and windows["60m"]["amount"] >= thresholds.total_60m_cents
+        )
+        if structured_aggregate:
+            signals.append("STRUCTURED_AGGREGATE_60M")
+            points = max(points, 35)
+        elif windows["60m"]["amount"] >= thresholds.total_60m_cents:
+            signals.append("ELEVATED_ATTEMPT_TOTAL_60M")
+            points = max(points, 25)
+        elif windows["1440m"]["amount"] >= thresholds.total_24h_cents:
+            signals.append("ELEVATED_ATTEMPT_TOTAL_24H")
+            points = max(points, 25)
+
         return min(points, self.config.family_caps.exposure_velocity), signals, critical_burst
 
-    def _profile(self, contextual: dict, amount: int) -> tuple[int, list[str], int | None]:
+    def _profile(
+        self,
+        contextual: dict,
+        amount: int,
+        prior_count: int,
+        account_context: dict,
+        thresholds: PartyRiskThresholds,
+    ) -> tuple[int, list[str], int | None]:
         profile = self._mapping(contextual, "profile")
         if profile.get("observation") not in {"observed", "insufficient_history"}:
             raise RiskPolicyUnavailable()
         count = self._non_negative_int(profile.get("prior_attempt_count"))
         span = self._non_negative_int(profile.get("history_span_seconds"))
+        source_age = self._integer(account_context.get("source_account_age_days"))
+        if (
+            prior_count == 0
+            and 0 <= source_age < self.config.cold_start_max_account_age_days
+            and amount >= thresholds.cold_start_amount_cents
+        ):
+            return (
+                self.config.family_caps.profile,
+                ["FIRST_OBSERVED_YOUNG_SOURCE_ACCOUNT"],
+                None,
+            )
         if (
             profile.get("observation") != "observed"
             or count < self.config.profile_min_prior_attempts
@@ -275,7 +420,14 @@ class PixAdaptiveRiskPolicy:
             points = max(points, 10)
         return min(points, self.config.family_caps.profile), signals, ratio
 
-    def _relationship(self, evidence: dict, contextual: dict, prior_count: int):
+    def _relationship(
+        self,
+        evidence: dict,
+        contextual: dict,
+        prior_count: int,
+        account_context: dict,
+        thresholds: PartyRiskThresholds,
+    ):
         observation = self._mapping(evidence, "counterparty").get("observation")
         if observation not in {"observed", "not_observed", "insufficient_history"}:
             raise RiskPolicyUnavailable()
@@ -287,16 +439,21 @@ class PixAdaptiveRiskPolicy:
         self._non_negative_int(relationship.get("prior_counterparty_attempt_count"))
         signals = []
         points = 0
-        if prior_count >= self.config.context_min_prior_attempts and observation == "not_observed":
+        is_self_transfer = account_context["is_self_transfer"]
+        if (
+            not is_self_transfer
+            and prior_count >= self.config.context_min_prior_attempts
+            and observation == "not_observed"
+        ):
             signals.append("NEW_COUNTERPARTY")
             points = 5
         if pair_count >= 5:
             signals.append("PAIR_REPETITION_15M")
             points = max(points, 10)
-        if distinct >= 8:
+        if distinct >= thresholds.critical_fan_out_60m:
             signals.append("CRITICAL_FAN_OUT_60M")
             points = self.config.family_caps.relationship
-        elif distinct >= 4:
+        elif distinct >= thresholds.elevated_fan_out_60m:
             signals.append("ELEVATED_FAN_OUT_60M")
             points = max(points, 12)
         return min(points, self.config.family_caps.relationship), signals
@@ -438,7 +595,13 @@ class PixAdaptiveRiskPolicy:
             critical_geolocation,
         )
 
-    def _beneficiary(self, contextual: dict, amount: int):
+    def _beneficiary(
+        self,
+        contextual: dict,
+        amount: int,
+        account_context: dict,
+        thresholds: PartyRiskThresholds,
+    ):
         beneficiary = self._mapping(contextual, "beneficiary")
         if beneficiary.get("global_observation") not in {
             "observed",
@@ -454,13 +617,24 @@ class PixAdaptiveRiskPolicy:
 
         signals = []
         points = 0
-        if beneficiary["global_observation"] == "not_observed":
+        is_self_transfer = account_context["is_self_transfer"]
+        if (
+            not is_self_transfer
+            and beneficiary["global_observation"] == "not_observed"
+        ):
             signals.append("RECIPIENT_FIRST_SYSTEM_OBSERVATION")
             points = 5
-        if payers >= 5 and attempts >= 8:
+        if (
+            payers >= thresholds.recipient_fan_in_payers_60m
+            and attempts >= thresholds.recipient_fan_in_attempts_60m
+        ):
             signals.append("RECIPIENT_FAN_IN_60M")
             points = 15
-        if 0 <= age < 7 and amount >= 300_000:
+        if (
+            not is_self_transfer
+            and 0 <= age < 7
+            and amount >= thresholds.young_destination_amount_cents
+        ):
             signals.append("YOUNG_DESTINATION_ACCOUNT")
             points += 5
         return min(points, self.config.family_caps.beneficiary_network), signals
@@ -471,6 +645,42 @@ class PixAdaptiveRiskPolicy:
         if contextual.get("schema_version") != ADAPTIVE_CONTEXTUAL_EVIDENCE_SCHEMA_VERSION:
             raise RiskPolicyUnavailable()
         return contextual
+
+    def _thresholds(self, party_type: str) -> PartyRiskThresholds:
+        if party_type == "pf":
+            return self.config.pf_thresholds
+        if party_type == "pj":
+            return self.config.pj_thresholds
+        if party_type == "unknown":
+            return self.config.unknown_thresholds
+        raise RiskPolicyUnavailable()
+
+    @staticmethod
+    def _party_types(contextual: dict) -> dict[str, str]:
+        party_types = PixAdaptiveRiskPolicy._mapping(contextual, "party_types")
+        for key in ("payer", "payee"):
+            if party_types.get(key) not in {"pf", "pj", "unknown"}:
+                raise RiskPolicyUnavailable()
+        return {
+            "payer": party_types["payer"],
+            "payee": party_types["payee"],
+        }
+
+    @staticmethod
+    def _account_context(contextual: dict) -> dict:
+        account_context = PixAdaptiveRiskPolicy._mapping(
+            contextual, "account_context"
+        )
+        source_age = account_context.get("source_account_age_days")
+        is_self_transfer = account_context.get("is_self_transfer")
+        if isinstance(source_age, bool) or not isinstance(source_age, int):
+            raise RiskPolicyUnavailable()
+        if not isinstance(is_self_transfer, bool):
+            raise RiskPolicyUnavailable()
+        return {
+            "source_account_age_days": source_age,
+            "is_self_transfer": is_self_transfer,
+        }
 
     @staticmethod
     def _mapping(value: dict, key: str) -> dict:
@@ -501,5 +711,11 @@ class PixAdaptiveRiskPolicy:
     @staticmethod
     def _non_negative_int(value) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise RiskPolicyUnavailable()
+        return value
+
+    @staticmethod
+    def _integer(value) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
             raise RiskPolicyUnavailable()
         return value

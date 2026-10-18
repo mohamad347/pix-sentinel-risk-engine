@@ -24,3 +24,20 @@ USER user
 # informacao de menos pra quem procura uma versao com falha conhecida.
 CMD uvicorn app:app --host 0.0.0.0 --port 3000 --no-server-header
 
+
+# A imagem de teste leva pytest e a suite para dentro da mesma rede isolada da
+# API e do PostgreSQL. Assim, quem avalia o projeto nao precisa instalar Python
+# nem configurar DATABASE_URL na propria maquina.
+FROM base AS test
+COPY requirements-dev.txt /requirements-dev.txt
+RUN pip install -r /requirements-dev.txt
+WORKDIR /workspace
+COPY pytest.ini /workspace/pytest.ini
+COPY src /workspace/src
+COPY scripts /workspace/scripts
+COPY tests /workspace/tests
+RUN chown -R user /workspace
+USER user
+
+CMD python -m pytest -q
+

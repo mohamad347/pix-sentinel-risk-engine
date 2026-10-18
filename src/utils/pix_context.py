@@ -1,18 +1,25 @@
 import math
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 
 CONTEXTUAL_EVIDENCE_SCHEMA_VERSION = "pix-context-v2-candidate-v1"
-ADAPTIVE_CONTEXTUAL_EVIDENCE_SCHEMA_VERSION = "pix-context-v3-r2-v2"
+ADAPTIVE_CONTEXTUAL_EVIDENCE_SCHEMA_VERSION = "pix-context-v3-r4-v4"
 EARTH_RADIUS_KM = 6371.0088
+BRAZIL_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 
 
-def classify_party_type(document: str) -> str:
+def normalize_document(document: str) -> str:
     if not isinstance(document, str):
-        return "unknown"
+        return ""
     normalized = document
     for separator in (".", "-", "/", " "):
         normalized = normalized.replace(separator, "")
+    return normalized.upper()
+
+
+def classify_party_type(document: str) -> str:
+    normalized = normalize_document(document)
     if len(normalized) == 11 and normalized.isdigit():
         return "pf"
     if len(normalized) == 14 and normalized.isalnum():
@@ -151,6 +158,7 @@ def build_adaptive_contextual_evidence(
         else "insufficient_history"
     )
     transaction_at = _payload_datetime(current_payload["transaction_date"])
+    source_opened_at = _payload_datetime(current_payload["source_account"]["opening_date"])
     destination_opened_at = _payload_datetime(
         current_payload["destination_account"]["opening_date"]
     )
@@ -158,6 +166,7 @@ def build_adaptive_contextual_evidence(
     destination_age_days = int(
         (admitted_at - destination_opened_at).total_seconds() // 86_400
     )
+    source_age_days = int((admitted_at - source_opened_at).total_seconds() // 86_400)
     nighttime_observation = _nighttime_observation(
         transaction_at,
         profile_attempt_count,
@@ -216,6 +225,13 @@ def build_adaptive_contextual_evidence(
             "attempt_count_60m": int(beneficiary_context["attempt_count_60m"]),
             "destination_account_age_days": destination_age_days,
         },
+        "account_context": {
+            "source_account_age_days": source_age_days,
+            "is_self_transfer": bool(
+                normalize_document(payer_document)
+                and normalize_document(payer_document) == normalize_document(payee_document)
+            ),
+        },
         "party_types": {
             "payer": classify_party_type(payer_document),
             "payee": classify_party_type(payee_document),
@@ -237,8 +253,8 @@ def _nighttime_observation(
     profile_attempt_count: int,
     prior_nighttime_attempt_count: int,
 ) -> str:
-    utc_hour = transaction_at.astimezone(timezone.utc).hour
-    if not 0 <= utc_hour < 6:
+    brazil_hour = transaction_at.astimezone(BRAZIL_TIMEZONE).hour
+    if not (brazil_hour >= 20 or brazil_hour < 6):
         return "not_nighttime"
     if profile_attempt_count < 5:
         return "insufficient_history"

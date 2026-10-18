@@ -5,7 +5,7 @@ padrão; a V1 permanece selecionável explicitamente para compatibilidade.
 
 ## Resultado
 
-A revisão vigente `mvp-risk-adaptive-v3-r2` transforma o catálogo amplo de
+A revisão vigente `mvp-risk-adaptive-v3-r4` transforma o catálogo amplo de
 hipóteses em sinais executáveis sobre os
 dados que o contrato realmente fornece. Ela não cria dependência de core
 bancário, bureau externo, biometria, saldo ou MockServer.
@@ -16,7 +16,7 @@ com teto por família para evitar dupla contagem:
 | Família | Evidências executáveis | Teto |
 |---|---|---:|
 | Exposição e velocidade | valor atual; rajada de 1 e 5 min; total de 60 min e 24 h; fracionamento | 60 |
-| Perfil | mediana e percentil 90 de decisões anteriores aprovadas; tamanho e cobertura da amostra | 15 |
+| Perfil | mediana e percentil 90 de decisões anteriores aprovadas; cold start material em conta de origem jovem | 15 |
 | Relacionamento | destinatário novo; repetição do par em 15 min; fan-out em 60 min | 15 |
 | Acesso | device, IP e canal novos; churn local; device/IP compartilhado entre pagadores | 20 |
 | Temporal | divergência entre relógios; horário incomum; velocidade geográfica derivada | 25 |
@@ -30,12 +30,16 @@ contas, IPs, device IDs ou coordenadas crus.
 
 - score menor que 25: `approved`;
 - score entre 25 e 59: `two_factor_required`;
-- rejeita com oito tentativas e R$ 30.000 em cinco minutos;
+- acesso >= 18 combinado com relacionamento ou rede do recebedor pontuando
+  recomenda 2FA mesmo quando o score fica em 23;
+- rejeita com oito tentativas e R$ 30.000 para PF/indefinido ou R$ 100.000 para PJ em cinco minutos;
 - rejeita velocidade geográfica superior a 1.000 km/h, ou pontos distantes em
   até 60 segundos, somente quando acesso também pontua ao menos 10;
 - rejeita score 60 ou maior somente quando ao menos quatro famílias pontuam e
   acesso pontua 18 ou rede do recebedor pontua 15;
 - sem uma dessas salvaguardas, score 25 ou maior recomenda 2FA;
+- primeira observação local de conta de origem com menos de 30 dias e valor de
+  pelo menos R$ 3.000 para PF/indefinido ou R$ 10.000 para PJ recomenda 2FA;
 - ausência de histórico não vira risco automaticamente;
 - perfil usa somente decisões anteriores `approved`; velocity e rede continuam
   contando tentativas, pois não são rótulos de fraude;
@@ -44,10 +48,12 @@ contas, IPs, device IDs ou coordenadas crus.
 O score é ordinal e explicável, não probabilidade de fraude.
 
 Quando o resultado exige 2FA, o contrato recomenda `push_confirmation` no
-nível `standard`. Ele eleva a recomendação para `facial_liveness` no nível
-`enhanced` quando acesso pontua ao menos 18 e aparece junto de perfil >= 10,
+nível `standard`. Somente para PF, ele eleva a recomendação para
+`facial_liveness` no nível `enhanced` quando acesso pontua ao menos 18 e aparece junto de perfil >= 10,
 relacionamento >= 12 ou temporal >= 15. A recomendação não executa nem declara
 concluída a autenticação. Decisões aprovadas e rejeitadas omitem `challenge`.
+PJ e tipo indefinido permanecem em `push_confirmation`, pois o contrato não
+identifica a pessoa operadora autorizada da empresa.
 
 ## Rastreabilidade das hipóteses
 
@@ -57,7 +63,7 @@ há variações, garantias de engenharia, hipóteses dependentes de fontes ausen
 sinais fortemente correlacionados.
 
 A V3 torna executáveis ou explicitamente observáveis 46 hipóteses/garantias do
-catálogo em 28 sinais pontuáveis, além dos estados diagnósticos:
+catálogo em 29 sinais pontuáveis, além dos estados diagnósticos:
 
 | Bloco | IDs cobertos | Implementação |
 |---|---|---|
@@ -85,16 +91,17 @@ não é holdout independente nem prova de eficácia produtiva.
 | Tomada de conta com velocidade impossível | aprovado | aprovado, 18 | rejeitado, 57 |
 | Fan-in + conta jovem + IP compartilhado | aprovado | aprovado, 0 | 2FA, 36 |
 | Desvio de perfil + novo destino/acesso | aprovado | 2FA, 33 | 2FA, 45 |
-| Lote PJ legítimo na fronteira crítica | rejeitado | rejeitado, 75 | rejeitado, 75 |
+| Lote PJ legítimo na fronteira crítica | rejeitado | rejeitado, 60 | aprovado, 15 |
 | Convergência crítica de quatro famílias | aprovado | 2FA, 40 | rejeitado, 65 |
 | Velocidade impossível sem anomalia de acesso | aprovado | aprovado, 0 | 2FA, 25 |
 
-Intenções sintéticas atendidas: V1 `3/10`, V2 R2 `4/10`, V3 `9/10`. O resultado
+Intenções sintéticas atendidas: V1 `3/10`, V2 R2 `4/10`, V3 `10/10`. O resultado
 completo e os breakdowns estão em
-`docs/PIX_SENTINEL_RESULTADOS_V3_CENARIOS.json`. A falha A08 é mantida no
-relatório: as três políticas podem rejeitar um lote PJ legítimo. Sem cadastro,
-finalidade e confirmação bancária confiáveis, remover essa rejeição seria apenas
-trocar um falso positivo conhecido por risco não medido.
+`docs/PIX_SENTINEL_RESULTADOS_V3_CENARIOS.json`. Na R4, o cenário A08 representa
+um lote PJ compatível com seu próprio perfil. Quatro operações em um minuto não
+atingem o limiar PJ de seis; oito em cinco minutos geram 15 pontos, insuficientes
+para fricção isolada. Isso remove a duplicidade entre 1 e 5 minutos sem neutralizar
+uma microrrajada empresarial mais intensa.
 
 Nos 30 cenários antigos B2/C2/C3, a projeção retrospectiva da V3 preserva os
 resultados da R2 (`5/9`, `5/9`, `7/12`). Isso era esperado: aqueles cenários não
@@ -106,13 +113,8 @@ evidência de ganho.
 A seleção abaixo é opcional porque a V3 já é o padrão:
 
 ```powershell
-$env:PIX_RISK_POLICY = "mvp-risk-adaptive-v3-r2"
-docker compose -f docker-compose.test.yml up -d --build --force-recreate
-```
-
-```powershell
-.\.venv\Scripts\python.exe scripts\evaluate_adaptive_v3.py
-.\.venv\Scripts\python.exe -m pytest tests\unit -q
+$env:PIX_RISK_POLICY = "mvp-risk-adaptive-v3-r4"
+docker compose -p pix-sentinel-tests -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from pix_test_runner
 ```
 
 ## Parecer
@@ -120,6 +122,6 @@ docker compose -f docker-compose.test.yml up -d --build --force-recreate
 **GO para demonstração como política vigente; NO-GO para alegar eficácia
 produtiva.** A V3 melhora materialmente a profundidade exigida pelo
 desafio e demonstra engenharia de features, privacidade e prevenção de dupla
-contagem. Ainda faltam dados rotulados independentes, calibração PF/PJ e uma
-resposta defensável para lotes legítimos na fronteira crítica.
+contagem. Ainda faltam dados rotulados independentes e calibração produtiva dos
+limiares segmentados de PF/PJ.
 
