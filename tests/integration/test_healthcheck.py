@@ -25,14 +25,14 @@ class TestHealthCheck:
         assert response.response_status == 204
 
     def test_no_token(self):
-        response = ClientRequisition.send("PUT", "/sample")
+        response = ClientRequisition.send("PUT", "/route-that-does-not-exist")
         assert response.response_status == 403
         assert response.response_json["code"] == "QIT000002"
 
     def test_sink(self):
         response = ClientRequisition.send(
             "PUT",
-            "/sample",
+            "/route-that-does-not-exist",
             headers={"INTERNAL-TOKEN": INTERNAL_TOKEN},
         )
         assert response.response_status == 404
@@ -55,14 +55,14 @@ class TestHealthCheck:
         verdade: JSON é UTF-8, o acento cabe nele, e a API não tem por que
         raspar cedilha e til de um texto escrito pra brasileiro ler.
         """
-        response = ClientRequisition.send("PUT", "/sample")
+        response = ClientRequisition.send("PUT", "/route-that-does-not-exist")
         assert response.response_status == 403
         assert response.response_json["code"] == "QIT000002"
         assert response.response_json["translation"] == FORBIDDEN_TRANSLATION
 
         response = ClientRequisition.send(
             "PUT",
-            "/sample",
+            "/route-that-does-not-exist",
             headers={"INTERNAL-TOKEN": INTERNAL_TOKEN},
         )
         assert response.response_status == 404

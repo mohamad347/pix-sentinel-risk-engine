@@ -76,13 +76,13 @@ class SchemaHandler:
     """
 
     @staticmethod
-    def validate(schema_file_name: str):
+    def validate(schema_file_name: str, error_class=InvalidSchema):
         """Decorator que valida o `payload` antes de o resource rodar.
 
         Usa-se assim, no método do resource que recebe corpo:
 
-            class SampleEntityResource:
-                @SchemaHandler.validate("post_sample_entity.json")
+            class PixTransactionResource:
+                @SchemaHandler.validate("post_pix_transaction.json")
                 def on_post(self, payload: dict) -> dict:
 
         O nome do arquivo é o único argumento, e ele aponta pra dentro
@@ -90,7 +90,7 @@ class SchemaHandler:
         DELETE — não leva decorator nenhum: não há o que conferir.
 
         Repare que o endereço HTTP não aparece aqui. Quem liga
-        "/sample_entity" a este método é o src/app.py, e é de propósito:
+        "/pix/transaction" a este método é o src/app.py, e é de propósito:
         o resource cuida do CONTEÚDO da requisição, o app.py cuida do
         ENDEREÇO dela.
         """
@@ -110,7 +110,7 @@ class SchemaHandler:
                 try:
                     validate(kwargs["payload"], schema, resolver=resolver)
                 except ValidationError as error:
-                    raise InvalidSchema(describe_schema_error(error))
+                    raise error_class(describe_schema_error(error))
 
                 return func(*args, **kwargs)
 
@@ -124,8 +124,8 @@ class SchemaHandler:
 
         Usa-se assim, num metodo que recebe a requisicao inteira:
 
-            class SampleEntityResource:
-                @SchemaHandler.validate_query_params("get_sample_entities.json")
+            class ListResource:
+                @SchemaHandler.validate_query_params("get_items.json")
                 def on_get_list(self, request: Request) -> JSONResponse:
 
         Por que ler do `request` em vez dos argumentos da funcao: o

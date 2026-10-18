@@ -1,0 +1,63 @@
+{
+  "title": "PostPixTransaction",
+  "type": "object",
+  "required": ["id", "amount", "transaction_date", "source_account", "destination_account", "source"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "amount": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+    "transaction_date": {"type": "string", "minLength": 1},
+    "source_account": {
+      "type": "object",
+      "required": ["branch", "account_number", "opening_date", "owner"],
+      "properties": {
+        "branch": {"type": "string", "minLength": 1},
+        "account_number": {"type": "string", "minLength": 1},
+        "opening_date": {"type": "string", "minLength": 1},
+        "owner": {
+          "type": "object",
+          "required": ["document_number"],
+          "properties": {"document_number": {"type": "string", "minLength": 1}},
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "destination_account": {
+      "type": "object",
+      "required": ["participant", "branch", "account_number", "opening_date", "owner"],
+      "properties": {
+        "participant": {"type": "string", "minLength": 1},
+        "branch": {"type": "string", "minLength": 1},
+        "account_number": {"type": "string", "minLength": 1},
+        "opening_date": {"type": "string", "minLength": 1},
+        "owner": {
+          "type": "object",
+          "required": ["document_number"],
+          "properties": {"document_number": {"type": "string", "minLength": 1}},
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "source": {
+      "type": "object",
+      "required": ["device_id", "channel", "ip"],
+      "properties": {
+        "device_id": {"type": "string", "minLength": 1},
+        "channel": {"type": "string", "minLength": 1},
+        "ip": {"type": "string", "minLength": 1},
+        "geolocation": {
+          "type": ["object", "null"],
+          "required": ["latitude", "longitude"],
+          "properties": {
+            "latitude": {"type": "number", "minimum": -90, "maximum": 90},
+            "longitude": {"type": "number", "minimum": -180, "maximum": 180}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -36,9 +36,9 @@ def register_session_manager_middleware(application: FastAPI) -> None:
     então commita. E seria errado.
 
     Quem sabe se o trabalho terminou é o controller, não a camada de
-    fora. Abra src/controllers/sample_entity_controller.py: em `create` e
-    em `update_status`, o `self.session.commit()` é a ÚLTIMA linha antes
-    do `return` — depois que a regra passou, nunca antes.
+    fora. No `PixTransactionController.create`, o commit acontece depois
+    que a tentativa e a análise foram preparadas — depois que a regra
+    passou, nunca antes.
 
     Com o commit aqui, esse controle sumiria. Uma rota que grava e depois
     descobre que não podia teria a gravação salva assim mesmo, porque a
@@ -99,16 +99,14 @@ def register_session_manager_middleware(application: FastAPI) -> None:
 
         GET /                    -> 500
         GET /health_check        -> 500
-        GET /sample_entities     -> 200
-        POST /sample_entity      -> 201
+        POST /pix/transaction    -> usa uma sessão
 
         AttributeError: 'NoneType' object has no attribute 'close'
 
     Leia de novo a ordem dos quatro resultados, porque ela é o ensinamento
-    inteiro. Você mexeu na SESSÃO DE BANCO — e quem quebrou foi justo
-    quem NÃO usa banco. As rotas que você foi conferir primeiro ficaram
-    verdes, e o 500 foi parar no health check, que é o endereço que o
-    Docker consulta pra decidir se o container está vivo.
+    inteiro. Você mexeu na SESSÃO DE BANCO — e quem quebra é justo quem
+    NÃO usa banco. O 500 vai parar no health check, que é o endereço que
+    o Docker consulta pra decidir se o container está vivo.
 
     Toda vez que a sessão é opcional, existe um segundo caminho de
     requisição em que ela não existe, e todo `rollback`/`close` precisa

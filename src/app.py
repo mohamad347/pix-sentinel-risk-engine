@@ -9,7 +9,7 @@ from middlewares import (
     register_request_logger_middleware,
     register_session_manager_middleware,
 )
-from resources import HealthCheckResource, SampleEntityResource
+from resources import HealthCheckResource, PixTransactionResource
 from utils.logger import setup_logging
 
 
@@ -123,7 +123,7 @@ def create_app() -> FastAPI:
     # se a coisa foi criada, agendada ou concluída. Esta lista diz QUEM
     # atende cada endereço, e mais nada.
     health_check_resource = HealthCheckResource()
-    sample_entity_resource = SampleEntityResource()
+    pix_transaction_resource = PixTransactionResource()
 
     application.add_api_route("/", health_check_resource.on_get_home, methods=["GET"])
     application.add_api_route(
@@ -133,28 +133,13 @@ def create_app() -> FastAPI:
     )
 
     application.add_api_route(
-        "/sample_entity",
-        sample_entity_resource.on_post,
+        "/pix/transaction",
+        pix_transaction_resource.on_post,
         methods=["POST"],
     )
     application.add_api_route(
-        "/sample_entity/{sample_entity_key}",
-        sample_entity_resource.on_get_by_key,
-        methods=["GET"],
-    )
-    application.add_api_route(
-        "/sample_entity/{sample_entity_key}",
-        sample_entity_resource.on_put_by_key,
-        methods=["PUT"],
-    )
-    application.add_api_route(
-        "/webhook/sample_entity/{sample_entity_key}/increment_counter",
-        sample_entity_resource.on_put_increment_counter,
-        methods=["PUT"],
-    )
-    application.add_api_route(
-        "/sample_entities",
-        sample_entity_resource.on_get_list,
+        "/pix/transaction/{id}",
+        pix_transaction_resource.on_get_by_external_id,
         methods=["GET"],
     )
 
