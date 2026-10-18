@@ -73,6 +73,12 @@ def test_orm_contains_required_uniqueness_constraints():
 
     assert ("external_id",) in pix_constraints
     assert ("transaction_id",) in analysis_constraints
+    assert "pix_transactions_external_id_key" in {
+        constraint.name for constraint in PixTransaction.__table__.constraints
+    }
+    assert "pix_analyses_transaction_id_key" in {
+        constraint.name for constraint in PixAnalysis.__table__.constraints
+    }
 
 
 def test_models_compile_for_postgresql():

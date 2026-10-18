@@ -38,3 +38,16 @@ class BootstrapPolicyUnavailable(QIException):
             "No antifraud policy is enabled for this environment.",
             "Nenhuma política antifraude está habilitada para este ambiente.",
         )
+
+
+class PixTransactionConflict(QIException):
+    code = "QIT002004"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Pix transaction conflict",
+            self.code,
+            409,
+            "The Pix identifier is already associated with different transaction data.",
+            "O identificador Pix já está associado a dados de transação diferentes.",
+        )
