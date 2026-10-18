@@ -90,3 +90,19 @@ def test_marks_unobserved_counterparty_only_when_payer_has_prior_history():
         "is_previously_observed": False,
         "is_unobserved_with_payer_history": True,
     }
+
+
+def test_history_snapshot_accepts_versioned_contextual_evidence():
+    contextual = {
+        "schema_version": "pix-context-v2-candidate-v1",
+        "device": {"observation": "insufficient_history", "prior_attempt_count": 0},
+    }
+    evidence = build_evidence_snapshot(
+        admitted_at=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        prior_attempt_count=0,
+        prior_counterparty_attempt_count=0,
+        windows={5: {"attempt_count": 1, "amount_cents": 100}},
+        contextual=contextual,
+    )
+
+    assert evidence["contextual"] == contextual
