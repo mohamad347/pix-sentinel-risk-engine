@@ -1,6 +1,7 @@
 import math
 from copy import deepcopy
 from datetime import datetime
+from ipaddress import ip_address
 
 from sqlalchemy.exc import IntegrityError
 
@@ -17,6 +18,7 @@ from utils.pix_canonicalization import (
 from utils.pix_context import (
     build_adaptive_contextual_evidence,
     build_contextual_evidence,
+    normalize_document,
 )
 from utils.pix_history import HISTORY_WINDOWS_MINUTES, build_evidence_snapshot
 
@@ -31,9 +33,20 @@ def _parse_aware_datetime(raw_value: str) -> datetime:
         raise InvalidPixPayload()
 
 
+def _require_identifier(value: str, maximum_length: int) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > maximum_length
+    ):
+        raise InvalidPixPayload()
+    return value
+
+
 def validate_and_extract_pix_data(payload: dict) -> dict:
-    external_id = payload["id"]
-    if external_id != external_id.strip() or "/" in external_id:
+    external_id = _require_identifier(payload["id"], 128)
+    if "/" in external_id:
         raise InvalidPixPayload()
 
     amount = payload["amount"]
@@ -41,8 +54,37 @@ def validate_and_extract_pix_data(payload: dict) -> dict:
         raise InvalidPixPayload()
 
     transaction_at = _parse_aware_datetime(payload["transaction_date"])
-    _parse_aware_datetime(payload["source_account"]["opening_date"])
-    _parse_aware_datetime(payload["destination_account"]["opening_date"])
+    source_account = payload["source_account"]
+    destination_account = payload["destination_account"]
+    payer_branch = _require_identifier(source_account["branch"], 64)
+    payer_account_number = _require_identifier(
+        source_account["account_number"], 64
+    )
+    payee_participant = _require_identifier(
+        destination_account["participant"], 64
+    )
+    payee_branch = _require_identifier(destination_account["branch"], 64)
+    payee_account_number = _require_identifier(
+        destination_account["account_number"], 64
+    )
+    device_identifier = _require_identifier(payload["source"]["device_id"], 128)
+    source_channel = _require_identifier(payload["source"]["channel"], 32)
+    source_opening_at = _parse_aware_datetime(source_account["opening_date"])
+    destination_opening_at = _parse_aware_datetime(
+        destination_account["opening_date"]
+    )
+
+    payer_document = normalize_document(source_account["owner"]["document_number"])
+    payee_document = normalize_document(
+        destination_account["owner"]["document_number"]
+    )
+    if not payer_document or not payee_document:
+        raise InvalidPixPayload()
+
+    try:
+        source_ip = str(ip_address(payload["source"]["ip"]))
+    except (TypeError, ValueError):
+        raise InvalidPixPayload()
 
     geolocation = payload["source"].get("geolocation")
     if geolocation is not None:
@@ -58,8 +100,11 @@ def validate_and_extract_pix_data(payload: dict) -> dict:
         ):
             raise InvalidPixPayload()
 
-    source_account = payload["source_account"]
-    destination_account = payload["destination_account"]
+    source_latitude = None
+    source_longitude = None
+    if geolocation is not None:
+        source_latitude = float(geolocation["latitude"])
+        source_longitude = float(geolocation["longitude"])
 
     return {
         "external_id": external_id,
@@ -68,14 +113,25 @@ def validate_and_extract_pix_data(payload: dict) -> dict:
         "request_payload": deepcopy(payload),
         "amount_cents": amount,
         "transaction_at": transaction_at,
-        "payer_document": source_account["owner"]["document_number"],
-        "payer_branch": source_account["branch"],
-        "payer_account_number": source_account["account_number"],
-        "payee_participant": destination_account["participant"],
-        "payee_branch": destination_account["branch"],
-        "payee_account_number": destination_account["account_number"],
-        "payee_document": destination_account["owner"]["document_number"],
-        "source_device_id": payload["source"]["device_id"],
+        "payer_account_data": {
+            "participant": None,
+            "branch": payer_branch,
+            "account_number": payer_account_number,
+            "owner_document": payer_document,
+            "opening_at": source_opening_at,
+        },
+        "payee_account_data": {
+            "participant": payee_participant,
+            "branch": payee_branch,
+            "account_number": payee_account_number,
+            "owner_document": payee_document,
+            "opening_at": destination_opening_at,
+        },
+        "device_identifier": device_identifier,
+        "source_channel": source_channel,
+        "source_ip": source_ip,
+        "source_latitude": source_latitude,
+        "source_longitude": source_longitude,
     }
 
 
@@ -96,9 +152,9 @@ class PixTransactionController(BaseController):
 
         try:
             self.pix_transaction_repository.acquire_payer_lock(
-                transaction_data["payer_document"],
-                transaction_data["payer_branch"],
-                transaction_data["payer_account_number"],
+                transaction_data["payer_account_data"]["owner_document"],
+                transaction_data["payer_account_data"]["branch"],
+                transaction_data["payer_account_data"]["account_number"],
             )
 
             existing = self.pix_transaction_repository.get_transaction_by_external_id(

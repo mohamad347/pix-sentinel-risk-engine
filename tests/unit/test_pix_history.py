@@ -19,6 +19,12 @@ def test_payer_lock_key_is_stable_and_uses_the_complete_account_identity():
     assert key != payer_advisory_lock_key("10123456789", "0001", "00000123")
 
 
+def test_payer_lock_key_uses_normalized_document_identity():
+    assert payer_advisory_lock_key(
+        "123.456.789-09", "0001", "00000123"
+    ) == payer_advisory_lock_key("12345678909", "0001", "00000123")
+
+
 def test_lock_key_encoding_does_not_confuse_component_boundaries():
     assert payer_advisory_lock_key("a", "bc", "d") != payer_advisory_lock_key("ab", "c", "d")
 

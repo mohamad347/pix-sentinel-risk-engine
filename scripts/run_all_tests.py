@@ -25,8 +25,8 @@ API_URL = "http://127.0.0.1:3000/health_check"
 
 SUITES = (
     (
-        "R6",
-        "mvp-risk-adaptive-v3-r6",
+        "R9",
+        "mvp-risk-adaptive-v3-r9",
         (
             "tests/unit",
             "tests/integration/test_healthcheck.py",
@@ -66,7 +66,7 @@ def reset_database(database_url: str) -> None:
         with engine.begin() as connection:
             connection.execute(
                 text(
-                    "TRUNCATE TABLE pix_analyses, pix_transactions "
+                    "TRUNCATE TABLE pix_analyses, pix_transactions, devices, accounts "
                     "RESTART IDENTITY CASCADE"
                 )
             )

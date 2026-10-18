@@ -6,7 +6,7 @@ from errors import RiskPolicyUnavailable
 from utils.pix_context import ADAPTIVE_CONTEXTUAL_EVIDENCE_SCHEMA_VERSION
 
 
-ADAPTIVE_POLICY_VERSION = "mvp-risk-adaptive-v3-r6"
+ADAPTIVE_POLICY_VERSION = "mvp-risk-adaptive-v3-r9"
 ADAPTIVE_HISTORY_WINDOWS_MINUTES = (1, 5, 15, 60, 1440)
 
 
@@ -28,10 +28,15 @@ class AdaptiveFamilyCaps:
 
 @dataclass(frozen=True)
 class PartyRiskThresholds:
-    current_value_cents: int
+    high_absolute_amount_cents: int
+    very_high_absolute_amount_cents: int
     microburst_count_1m: int
     total_60m_cents: int
+    total_60m_min_attempts: int
     total_24h_cents: int
+    total_24h_min_attempts: int
+    structured_aggregate_count_60m: int
+    critical_burst_count_5m: int
     critical_total_5m_cents: int
     elevated_fan_out_60m: int
     critical_fan_out_60m: int
@@ -45,18 +50,33 @@ class PartyRiskThresholds:
             value = getattr(self, field.name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise RiskPolicyUnavailable()
+        if self.high_absolute_amount_cents >= self.very_high_absolute_amount_cents:
+            raise RiskPolicyUnavailable()
+        if self.total_60m_cents >= self.total_24h_cents:
+            raise RiskPolicyUnavailable()
+        if self.microburst_count_1m >= self.critical_burst_count_5m:
+            raise RiskPolicyUnavailable()
+        if self.total_60m_min_attempts >= self.structured_aggregate_count_60m:
+            raise RiskPolicyUnavailable()
+        if self.structured_aggregate_count_60m > self.critical_burst_count_5m:
+            raise RiskPolicyUnavailable()
         if self.elevated_fan_out_60m >= self.critical_fan_out_60m:
             raise RiskPolicyUnavailable()
 
 
 PF_RISK_THRESHOLDS = PartyRiskThresholds(
-    current_value_cents=500_000,
+    high_absolute_amount_cents=500_000,
+    very_high_absolute_amount_cents=2_000_000,
     microburst_count_1m=4,
     total_60m_cents=1_500_000,
+    total_60m_min_attempts=3,
     total_24h_cents=5_000_000,
-    critical_total_5m_cents=3_000_000,
-    elevated_fan_out_60m=4,
-    critical_fan_out_60m=8,
+    total_24h_min_attempts=5,
+    structured_aggregate_count_60m=10,
+    critical_burst_count_5m=12,
+    critical_total_5m_cents=5_000_000,
+    elevated_fan_out_60m=6,
+    critical_fan_out_60m=12,
     recipient_fan_in_payers_60m=5,
     recipient_fan_in_attempts_60m=8,
     young_destination_amount_cents=300_000,
@@ -64,13 +84,18 @@ PF_RISK_THRESHOLDS = PartyRiskThresholds(
 )
 
 PJ_RISK_THRESHOLDS = PartyRiskThresholds(
-    current_value_cents=1_500_000,
+    high_absolute_amount_cents=1_500_000,
+    very_high_absolute_amount_cents=6_000_000,
     microburst_count_1m=6,
     total_60m_cents=5_000_000,
+    total_60m_min_attempts=6,
     total_24h_cents=15_000_000,
-    critical_total_5m_cents=10_000_000,
-    elevated_fan_out_60m=8,
-    critical_fan_out_60m=15,
+    total_24h_min_attempts=10,
+    structured_aggregate_count_60m=20,
+    critical_burst_count_5m=20,
+    critical_total_5m_cents=20_000_000,
+    elevated_fan_out_60m=15,
+    critical_fan_out_60m=30,
     recipient_fan_in_payers_60m=15,
     recipient_fan_in_attempts_60m=25,
     young_destination_amount_cents=1_000_000,
@@ -192,7 +217,7 @@ class PixAdaptiveRiskPolicy:
             "temporal": temporal,
             "beneficiary_network": beneficiary,
         }
-        risk_score = min(100, sum(families.values()))
+        base_risk_score = min(100, sum(families.values()))
         active_family_count = sum(points > 0 for points in families.values())
         triggered_signals = (
             exposure_signals
@@ -237,9 +262,29 @@ class PixAdaptiveRiskPolicy:
             access >= 18 and (relationship > 0 or beneficiary > 0)
         )
         convergent_critical_risk = (
-            risk_score >= self.config.reject_score
+            base_risk_score >= self.config.reject_score
             and active_family_count >= self.config.convergent_min_families
             and (access >= 18 or beneficiary >= 15)
+        )
+        deterministic_verification = any(
+            (
+                cold_start_verification_safeguard,
+                critical_profile_verification_safeguard,
+                behavioral_relationship_verification_safeguard,
+                early_mule_verification_safeguard,
+                recipient_fan_in_verification_safeguard,
+                critical_fan_out_verification_safeguard,
+                shared_device_verification_safeguard,
+                access_relationship_verification_safeguard,
+            )
+        )
+        two_factor_score_floor_applied = (
+            deterministic_verification
+            and base_risk_score < self.config.two_factor_score
+        )
+        risk_score = max(
+            base_risk_score,
+            self.config.two_factor_score if deterministic_verification else 0,
         )
         rejection_safeguards = []
         if critical_burst:
@@ -318,7 +363,9 @@ class PixAdaptiveRiskPolicy:
         decision_evidence = deepcopy(evidence_snapshot)
         decision_evidence["policy"] = {
             "policy_version": self.config.policy_version,
+            "base_risk_score": base_risk_score,
             "risk_score": risk_score,
+            "two_factor_score_floor_applied": two_factor_score_floor_applied,
             "families": families,
             "family_caps": {
                 field.name: getattr(self.config.family_caps, field.name)
@@ -399,7 +446,7 @@ class PixAdaptiveRiskPolicy:
             for name in ("1m", "5m", "15m", "60m", "1440m")
         }
         critical_burst = (
-            windows["5m"]["count"] >= 8
+            windows["5m"]["count"] >= thresholds.critical_burst_count_5m
             and windows["5m"]["amount"] >= thresholds.critical_total_5m_cents
         )
         if critical_burst:
@@ -411,25 +458,35 @@ class PixAdaptiveRiskPolicy:
 
         signals = []
         points = 0
-        if amount >= thresholds.current_value_cents:
-            signals.append("ELEVATED_CURRENT_VALUE")
-            points = 25
+        if amount >= thresholds.very_high_absolute_amount_cents:
+            signals.append("VERY_HIGH_ABSOLUTE_AMOUNT")
+            points = 20
+        elif amount >= thresholds.high_absolute_amount_cents:
+            signals.append("HIGH_ABSOLUTE_AMOUNT")
+            points = 10
 
         if windows["1m"]["count"] >= thresholds.microburst_count_1m:
             signals.append("MICROBURST_1M")
             points = max(points, 25)
 
         structured_aggregate = (
-            windows["60m"]["count"] >= 10
+            windows["60m"]["count"]
+            >= thresholds.structured_aggregate_count_60m
             and windows["60m"]["amount"] >= thresholds.total_60m_cents
         )
         if structured_aggregate:
             signals.append("STRUCTURED_AGGREGATE_60M")
             points = max(points, 35)
-        elif windows["60m"]["amount"] >= thresholds.total_60m_cents:
+        elif (
+            windows["60m"]["count"] >= thresholds.total_60m_min_attempts
+            and windows["60m"]["amount"] >= thresholds.total_60m_cents
+        ):
             signals.append("ELEVATED_ATTEMPT_TOTAL_60M")
             points = max(points, 25)
-        elif windows["1440m"]["amount"] >= thresholds.total_24h_cents:
+        elif (
+            windows["1440m"]["count"] >= thresholds.total_24h_min_attempts
+            and windows["1440m"]["amount"] >= thresholds.total_24h_cents
+        ):
             signals.append("ELEVATED_ATTEMPT_TOTAL_24H")
             points = max(points, 25)
 

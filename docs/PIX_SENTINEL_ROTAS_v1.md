@@ -65,18 +65,26 @@ como payload inválido (`422`).
 
 | Campo | Regra efetiva |
 |---|---|
-| `id` | String não vazia, sem `/` e sem espaço no início/fim; não precisa ser UUID. |
+| `id` | String de 1 a 128 caracteres, sem `/` e sem espaço no início/fim; não precisa ser UUID. |
 | `amount` | Inteiro JSON estrito de 1 a `9223372036854775807`, em centavos; bool, float e string são inválidos. |
 | `transaction_date` | ISO 8601 com `Z` ou offset; precisão máxima de microssegundos. |
 | `opening_date` | Mesma exigência de fuso e precisão para origem e destino. |
-| agência, conta, participante, documento | Strings não vazias; zeros são preservados. |
+| agência, conta, participante | Strings de 1 a 64 caracteres, sem espaços nas bordas; zeros são preservados. |
+| documento | String de 1 a 64 caracteres; é normalizada sem `.`, `-`, `/` e espaços, e em maiúsculas, para a identidade local. O MVP não valida dígitos de CPF/CNPJ. |
+| `source.device_id` | String de 1 a 128 caracteres, sem espaços nas bordas. |
+| `source.channel` | String de 1 a 32 caracteres, sem espaços nas bordas. |
+| `source.ip` | IPv4 ou IPv6 válido, com até 45 caracteres; é normalizado e persistido como `INET`. |
 | `source.geolocation` | Opcional ou `null`; se presente, latitude `[-90,90]`, longitude `[-180,180]` e números finitos. |
-| demais campos | `source.device_id`, `source.channel` e `source.ip` são strings obrigatórias não vazias. |
 
 O schema usa `additionalProperties: true` em todos os níveis. Campos extras são
 aceitos e persistidos, porém o fingerprint e a política ignoram o que não faz
-parte do contrato oficial. O serviço não valida dígitos de CPF/CNPJ nem o
-formato real do IP.
+parte do contrato oficial.
+
+O contrato HTTP permanece o mesmo após a normalização do banco. Internamente,
+a API reutiliza registros de `accounts` e `devices`; `pix_transactions`
+referencia essas entidades e guarda IP, canal e coordenadas em colunas tipadas;
+`pix_analyses` preserva a decisão. O payload original continua em JSONB somente
+para auditoria, compatibilidade de replay e campos extras.
 
 ### Saída
 
@@ -89,9 +97,13 @@ O HTTP sempre é `200` quando a análise foi concluída, inclusive se o parecer 
   "status": "two_factor_required",
   "metadata": {
     "schema_version": "1.0",
-    "policy_version": "mvp-risk-adaptive-v3-r5",
-    "reason_code": "ADAPTIVE_VERIFICATION_RECOMMENDED",
-    "reason_description": "Independent risk contexts recommend additional verification.",
+    "policy_version": "mvp-risk-adaptive-v3-r9",
+    "reason_code": "ADAPTIVE_BEHAVIORAL_RELATIONSHIP_VERIFICATION",
+    "reason_description": "A behavioral deviation to a new counterparty requires verification.",
+    "risk_factors": [
+      "ELEVATED_MEDIAN_DEVIATION",
+      "NEW_COUNTERPARTY"
+    ],
     "challenge": {
       "type": "push_confirmation",
       "level": "standard",
@@ -107,12 +119,13 @@ Campos públicos de primeiro nível:
 |---|---|---|
 | `key` | UUID em string | Identificador imutável da análise. |
 | `status` | enum | `approved`, `two_factor_required` ou `rejected`. |
-| `metadata` | objeto | Versão e motivo; em 2FA inclui o desafio recomendado. |
+| `metadata` | objeto | Versão e motivo; em 2FA inclui o desafio recomendado e, em 2FA/rejeição, os fatores de risco sanitizados. |
 
 `challenge.type` pode ser `push_confirmation` ou, apenas para PF sob critérios
 reforçados, `facial_liveness`. O status `recommended` deixa explícito que a API
-não executou autenticação. Score, sinais, CPF/CNPJ, conta, IP e coordenadas não
-são expostos.
+não executou autenticação. `risk_factors` expõe somente códigos de sinais, sem
+valores brutos; score, CPF/CNPJ, conta, IP e coordenadas não são expostos. Em
+`approved`, o campo é omitido.
 
 ### Idempotência
 

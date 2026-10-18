@@ -71,10 +71,11 @@ def main() -> None:
     show("1. Pix simples", approved_result)
 
     high_value = payload(f"demo-{run}-2fa", 500_000, f"{run}-2fa")
+    high_value["source_account"]["opening_date"] = "2026-10-13T10:00:00-03:00"
     high_value_result = call(args.base_url, args.token, "POST", "/pix/transaction", high_value)
     assert high_value_result[0] == 200
     assert high_value_result[1]["status"] == "two_factor_required"
-    show("2. Pix de R$ 5.000", high_value_result)
+    show("2. Pix de R$ 5.000 em conta de origem jovem", high_value_result)
 
     critical_results = []
     for sequence in range(1, 9):

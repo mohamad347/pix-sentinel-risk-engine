@@ -32,10 +32,10 @@ infraestrutura.
 | `src/resources/` | Traduz HTTP para chamadas de controller e define o status de sucesso. |
 | `src/schemas/` | Contém o JSON Schema da entrada do POST. |
 | `src/controllers/pix_transaction_controller.py` | Valida semântica, controla idempotência, lock, histórico, política, persistência e commit. |
-| `src/controllers/pix_adaptive_risk_policy.py` | Implementa a política padrão `mvp-risk-adaptive-v3-r6`. |
-| `src/controllers/pix_policy_selector.py` | Seleciona R6 por padrão; mantém V1 selecionável e V2/V2 R2 restritas a teste. |
-| `src/repositories/` | Executa locks, agregações históricas e operações SQLAlchemy. |
-| `src/models/` | Mapeia `pix_transactions` e `pix_analyses`. |
+| `src/controllers/pix_adaptive_risk_policy.py` | Implementa a política padrão `mvp-risk-adaptive-v3-r9`. |
+| `src/controllers/pix_policy_selector.py` | Seleciona R9 por padrão; mantém V1 selecionável e V2/V2 R2 restritas a teste. |
+| `src/repositories/` | Executa locks, upserts de conta/device, agregações históricas e operações SQLAlchemy. |
+| `src/models/` | Mapeia `accounts`, `devices`, `pix_transactions` e `pix_analyses`. |
 | `src/dtos/` | Limita a saída pública a `key`, `status` e `metadata`. |
 | `src/utils/pix_context.py` | Deriva contexto de perfil, acesso, horário, geolocalização e rede. |
 | `src/utils/pix_history.py` | Monta o snapshot histórico e a chave do advisory lock. |
@@ -55,8 +55,11 @@ O resource valida a estrutura pelo JSON Schema e chama o controller. O
 controller valida regras que o schema não representa com segurança, como
 inteiro estrito e timestamp com fuso, e define o limite transacional completo.
 O repository recebe a sessão já associada à requisição; ele não cria sessão nem
-faz commit. A política recebe somente dados extraídos e evidências derivadas,
-sem acessar HTTP ou banco diretamente.
+faz commit. Ele reutiliza `accounts` e `devices` por chaves únicas, persiste a
+tentativa com FKs e consulta IP, canal e geolocalização em colunas tipadas. O
+JSONB original é trilha de auditoria/replay, não modelo de consulta histórica.
+A política recebe somente dados extraídos e evidências derivadas, sem acessar
+HTTP ou banco diretamente.
 
 O commit ocorre no controller depois de criar a tentativa e a análise. O
 middleware de sessão executa rollback quando uma exceção escapa e fecha a
@@ -69,8 +72,8 @@ linha visível a outras transações antes do commit.
 Cada novo Pix adquire `pg_advisory_xact_lock` sobre uma chave SHA-256 derivada
 de documento, agência e conta do pagador. O lock é liberado pelo PostgreSQL no
 commit ou rollback e possui timeout local de 1 segundo. Depois do lock, o
-servidor obtém `received_at` com `clock_timestamp()`, insere a tentativa e faz
-as agregações.
+servidor normaliza o documento, obtém `received_at` com `clock_timestamp()`,
+reutiliza ou cria as contas e o device, insere a tentativa e faz as agregações.
 
 As janelas são `(T − W, T]` e incluem a tentativa atual exatamente uma vez. As
 consultas de “anterior” excluem sua chave interna. Perfil de valor e referência
@@ -81,7 +84,7 @@ parecer.
 ## Política ativa
 
 A variável `PIX_RISK_POLICY` seleciona a política. Sem configuração explícita,
-a aplicação usa `mvp-risk-adaptive-v3-r6`, formada por 28 sinais agrupados em
+a aplicação usa `mvp-risk-adaptive-v3-r9`, formada por 29 sinais agrupados em
 seis famílias com teto próprio. O score é limitado a 100, mas rejeição não
 depende apenas dele: há salvaguardas para rajada crítica, viagem impossível com
 anomalia de acesso e convergência de múltiplas famílias. O README contém a
@@ -105,8 +108,7 @@ Matriz completa, com banco descartável e falha se houver teste pulado:
 docker compose -p pix-sentinel-tests -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from pix_test_runner
 ```
 
-O executor alterna R6, V1, V2 e V2 R2 e limpa o PostgreSQL entre as suítes. O
-resultado validado mais recente é `188 passed, 0 skipped`.
+O executor alterna R9, V1, V2 e V2 R2 e limpa o PostgreSQL entre as suítes.
 
 ## Documentação mantida
 

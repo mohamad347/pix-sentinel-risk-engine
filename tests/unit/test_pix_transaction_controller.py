@@ -177,9 +177,19 @@ def test_create_persists_transaction_and_analysis_before_commit():
     assert set(response) == {"key", "status", "metadata"}
     assert response["status"] == "approved"
     assert response["metadata"]["policy_version"] == "bootstrap-dev-v1"
-    assert repository.transaction.payer_branch == "0001"
-    assert repository.transaction.payer_account_number == "00088213"
-    assert repository.transaction.payer_document == "00ABC12345000199"
+    assert repository.transaction.payer_account_data == {
+        "participant": None,
+        "branch": "0001",
+        "account_number": "00088213",
+        "owner_document": "00ABC12345000199",
+        "opening_at": datetime.fromisoformat("2025-03-02T10:00:00-03:00"),
+    }
+    assert repository.transaction.payee_account_data["owner_document"] == "00000000191"
+    assert repository.transaction.device_identifier == "dvc-unit"
+    assert repository.transaction.source_channel == "app"
+    assert repository.transaction.source_ip == "198.51.100.23"
+    assert repository.transaction.source_latitude == -23.56
+    assert repository.transaction.source_longitude == -46.65
     assert isinstance(repository.transaction.transaction_at, datetime)
     assert repository.transaction.transaction_at.utcoffset() is not None
     assert repository.transaction.received_at == repository.admitted_at
@@ -349,12 +359,63 @@ def test_geolocation_is_optional_and_original_payload_is_preserved():
 
     assert repository.transaction.request_payload == payload
     assert "geolocation" not in repository.transaction.request_payload["source"]
+    assert repository.transaction.source_latitude is None
+    assert repository.transaction.source_longitude is None
+
+
+@pytest.mark.parametrize("source_ip", ["not-an-ip", "999.51.100.23", ""])
+def test_rejects_invalid_source_ip_before_writing(source_ip):
+    payload = valid_pix_payload()
+    payload["source"]["ip"] = source_ip
+    repository = FakeRepository()
+    controller = controller_with(FakeSession(), repository, bootstrap_policy)
+
+    with pytest.raises(InvalidPixPayload):
+        controller.create(payload)
+
+    assert repository.events == []
+
+
+def test_normalizes_ipv6_and_account_documents_for_typed_persistence():
+    payload = valid_pix_payload()
+    payload["source"]["ip"] = "2001:0db8:0:0:0:0:0:1"
+    payload["source_account"]["owner"]["document_number"] = "123.456.789-09"
+
+    extracted = validate_and_extract_pix_data(payload)
+
+    assert extracted["source_ip"] == "2001:db8::1"
+    assert extracted["payer_account_data"]["owner_document"] == "12345678909"
+    assert extracted["payee_account_data"]["owner_document"] == "00000000191"
 
 
 @pytest.mark.parametrize("external_id", [" pix-unit-001", "pix-unit-001 ", "pix/unit-001"])
 def test_rejects_external_id_that_cannot_be_used_by_get_route(external_id):
     payload = valid_pix_payload()
     payload["id"] = external_id
+    repository = FakeRepository()
+    controller = controller_with(FakeSession(), repository, bootstrap_policy)
+
+    with pytest.raises(InvalidPixPayload):
+        controller.create(payload)
+
+    assert repository.events == []
+
+
+@pytest.mark.parametrize(
+    "field_path",
+    [
+        ("source_account", "branch"),
+        ("source_account", "account_number"),
+        ("destination_account", "participant"),
+        ("destination_account", "branch"),
+        ("destination_account", "account_number"),
+        ("source", "device_id"),
+        ("source", "channel"),
+    ],
+)
+def test_rejects_blank_persisted_identifiers_before_writing(field_path):
+    payload = valid_pix_payload()
+    payload[field_path[0]][field_path[1]] = "   "
     repository = FakeRepository()
     controller = controller_with(FakeSession(), repository, bootstrap_policy)
 

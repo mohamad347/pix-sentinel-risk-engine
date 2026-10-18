@@ -1,11 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import and_, case, func, or_, text, tuple_
+from sqlalchemy import and_, case, func, or_, select, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import contains_eager
 
 from database import Context
-from models import PixAnalysis, PixTransaction
+from models import Account, Device, PixAnalysis, PixTransaction
 from utils.pix_history import payer_advisory_lock_key
 
 
@@ -16,11 +17,64 @@ class PixTransactionRepository:
     def __init__(self, context: Context) -> None:
         self.session = context.db_session
 
-    def create_transaction(self, **transaction_data) -> PixTransaction:
-        transaction = PixTransaction(**transaction_data)
+    def create_transaction(
+        self,
+        *,
+        payer_account_data: dict,
+        payee_account_data: dict,
+        device_identifier: str,
+        **transaction_data,
+    ) -> PixTransaction:
+        payer_account_id = self._get_or_create_account_id(payer_account_data)
+        payee_account_id = self._get_or_create_account_id(payee_account_data)
+        device_id = self._get_or_create_device_id(device_identifier)
+        transaction = PixTransaction(
+            payer_account_id=payer_account_id,
+            payee_account_id=payee_account_id,
+            device_id=device_id,
+            **transaction_data,
+        )
         self.session.add(transaction)
         self.session.flush()
         return transaction
+
+    def _get_or_create_account_id(self, account_data: dict) -> int:
+        inserted_id = self.session.execute(
+            insert(Account)
+            .values(**account_data)
+            .on_conflict_do_nothing(constraint="accounts_identity_key")
+            .returning(Account.id)
+        ).scalar_one_or_none()
+        if inserted_id is not None:
+            return inserted_id
+
+        participant = account_data["participant"]
+        participant_match = (
+            Account.participant.is_(None)
+            if participant is None
+            else Account.participant == participant
+        )
+        return self.session.execute(
+            select(Account.id).where(
+                participant_match,
+                Account.branch == account_data["branch"],
+                Account.account_number == account_data["account_number"],
+                Account.owner_document == account_data["owner_document"],
+            )
+        ).scalar_one()
+
+    def _get_or_create_device_id(self, identifier: str) -> int:
+        inserted_id = self.session.execute(
+            insert(Device)
+            .values(identifier=identifier)
+            .on_conflict_do_nothing(constraint="devices_identifier_key")
+            .returning(Device.id)
+        ).scalar_one_or_none()
+        if inserted_id is not None:
+            return inserted_id
+        return self.session.execute(
+            select(Device.id).where(Device.identifier == identifier)
+        ).scalar_one()
 
     def acquire_payer_lock(self, document: str, branch: str, account_number: str) -> None:
         lock_key = payer_advisory_lock_key(document, branch, account_number)
@@ -50,17 +104,12 @@ class PixTransactionRepository:
                 is_prior_transaction,
                 PixAnalysis.status == "approved",
             )
-        is_same_counterparty = and_(
-            PixTransaction.payee_participant == transaction.payee_participant,
-            PixTransaction.payee_branch == transaction.payee_branch,
-            PixTransaction.payee_account_number == transaction.payee_account_number,
-            PixTransaction.payee_document == transaction.payee_document,
+        is_same_counterparty = (
+            PixTransaction.payee_account_id == transaction.payee_account_id
         )
-        is_same_device = PixTransaction.source_device_id == transaction.source_device_id
-        current_source = transaction.request_payload.get("source", {})
-        stored_source = PixTransaction.request_payload["source"]
-        is_same_ip = stored_source["ip"].astext == current_source.get("ip")
-        is_same_channel = stored_source["channel"].astext == current_source.get("channel")
+        is_same_device = PixTransaction.device_id == transaction.device_id
+        is_same_ip = PixTransaction.source_ip == transaction.source_ip
+        is_same_channel = PixTransaction.source_channel == transaction.source_channel
         columns = [
             func.count(PixTransaction.id)
             .filter(is_prior_transaction)
@@ -137,16 +186,7 @@ class PixTransactionRepository:
             ]
             if include_contextual:
                 window_columns.append(
-                    func.count(
-                        func.distinct(
-                            tuple_(
-                                PixTransaction.payee_participant,
-                                PixTransaction.payee_branch,
-                                PixTransaction.payee_account_number,
-                                PixTransaction.payee_document,
-                            )
-                        )
-                    )
+                    func.count(func.distinct(PixTransaction.payee_account_id))
                     .filter(in_window)
                     .label(f"distinct_counterparties_{minutes}m"),
                 )
@@ -156,10 +196,10 @@ class PixTransactionRepository:
                         func.count(PixTransaction.id)
                         .filter(in_window, is_same_counterparty)
                         .label(f"pair_attempt_count_{minutes}m"),
-                        func.count(func.distinct(PixTransaction.source_device_id))
+                        func.count(func.distinct(PixTransaction.device_id))
                         .filter(in_window)
                         .label(f"distinct_devices_{minutes}m"),
-                        func.count(func.distinct(stored_source["ip"].astext))
+                        func.count(func.distinct(PixTransaction.source_ip))
                         .filter(in_window)
                         .label(f"distinct_ips_{minutes}m"),
                     ]
@@ -175,9 +215,7 @@ class PixTransactionRepository:
         row = (
             query
             .filter(
-                PixTransaction.payer_document == transaction.payer_document,
-                PixTransaction.payer_branch == transaction.payer_branch,
-                PixTransaction.payer_account_number == transaction.payer_account_number,
+                PixTransaction.payer_account_id == transaction.payer_account_id,
                 PixTransaction.received_at <= transaction.received_at,
             )
             .one()
@@ -264,16 +302,11 @@ class PixTransactionRepository:
         in_60m = PixTransaction.received_at > transaction.received_at - timedelta(
             minutes=60
         )
-        same_beneficiary = and_(
-            PixTransaction.payee_participant == transaction.payee_participant,
-            PixTransaction.payee_branch == transaction.payee_branch,
-            PixTransaction.payee_account_number == transaction.payee_account_number,
-            PixTransaction.payee_document == transaction.payee_document,
+        same_beneficiary = (
+            PixTransaction.payee_account_id == transaction.payee_account_id
         )
-        stored_source = PixTransaction.request_payload["source"]
-        current_source = transaction.request_payload.get("source", {})
-        same_device = PixTransaction.source_device_id == transaction.source_device_id
-        same_ip = stored_source["ip"].astext == current_source.get("ip")
+        same_device = PixTransaction.device_id == transaction.device_id
+        same_ip = PixTransaction.source_ip == transaction.source_ip
         row = (
             self.session.query(
                 func.count(PixTransaction.id)
@@ -282,37 +315,13 @@ class PixTransactionRepository:
                 func.count(PixTransaction.id)
                 .filter(in_60m, same_beneficiary)
                 .label("attempt_count_60m"),
-                func.count(
-                    func.distinct(
-                        tuple_(
-                            PixTransaction.payer_document,
-                            PixTransaction.payer_branch,
-                            PixTransaction.payer_account_number,
-                        )
-                    )
-                )
+                func.count(func.distinct(PixTransaction.payer_account_id))
                 .filter(in_60m, same_beneficiary)
                 .label("distinct_payer_count_60m"),
-                func.count(
-                    func.distinct(
-                        tuple_(
-                            PixTransaction.payer_document,
-                            PixTransaction.payer_branch,
-                            PixTransaction.payer_account_number,
-                        )
-                    )
-                )
+                func.count(func.distinct(PixTransaction.payer_account_id))
                 .filter(in_60m, same_device)
                 .label("device_distinct_payer_count_60m"),
-                func.count(
-                    func.distinct(
-                        tuple_(
-                            PixTransaction.payer_document,
-                            PixTransaction.payer_branch,
-                            PixTransaction.payer_account_number,
-                        )
-                    )
-                )
+                func.count(func.distinct(PixTransaction.payer_account_id))
                 .filter(in_60m, same_ip)
                 .label("ip_distinct_payer_count_60m"),
             )
@@ -342,20 +351,25 @@ class PixTransactionRepository:
         }
 
     def _get_latest_prior_geolocation(self, transaction: PixTransaction) -> dict | None:
-        if transaction.request_payload.get("source", {}).get("geolocation") is None:
+        if (
+            transaction.source_latitude is None
+            or transaction.source_longitude is None
+        ):
             return None
-        geolocation = PixTransaction.request_payload["source"]["geolocation"]
         row = (
-            self.session.query(PixTransaction.request_payload, PixTransaction.received_at)
+            self.session.query(
+                PixTransaction.source_latitude,
+                PixTransaction.source_longitude,
+                PixTransaction.received_at,
+            )
             .join(PixAnalysis, PixAnalysis.transaction_id == PixTransaction.id)
             .filter(
-                PixTransaction.payer_document == transaction.payer_document,
-                PixTransaction.payer_branch == transaction.payer_branch,
-                PixTransaction.payer_account_number == transaction.payer_account_number,
+                PixTransaction.payer_account_id == transaction.payer_account_id,
                 PixTransaction.id != transaction.id,
                 PixTransaction.received_at <= transaction.received_at,
                 PixAnalysis.status == "approved",
-                func.jsonb_typeof(geolocation) == "object",
+                PixTransaction.source_latitude.is_not(None),
+                PixTransaction.source_longitude.is_not(None),
             )
             .order_by(PixTransaction.received_at.desc(), PixTransaction.id.desc())
             .limit(1)
@@ -363,10 +377,9 @@ class PixTransactionRepository:
         )
         if row is None:
             return None
-        coordinates = row.request_payload["source"]["geolocation"]
         return {
-            "latitude": coordinates.get("latitude"),
-            "longitude": coordinates.get("longitude"),
+            "latitude": row.source_latitude,
+            "longitude": row.source_longitude,
             "received_at": row.received_at,
         }
 

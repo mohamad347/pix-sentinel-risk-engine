@@ -2,6 +2,8 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
+from utils.pix_context import normalize_document
+
 
 EVIDENCE_SCHEMA_VERSION = "pix-history-v1"
 COUNTERPARTY_SCHEMA_VERSION = "pix-counterparty-v1"
@@ -10,7 +12,7 @@ HISTORY_WINDOWS_MINUTES = (5, 60)
 
 def payer_advisory_lock_key(document: str, branch: str, account_number: str) -> int:
     identity = json.dumps(
-        [document, branch, account_number],
+        [normalize_document(document), branch, account_number],
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")

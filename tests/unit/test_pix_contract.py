@@ -14,7 +14,7 @@ os.environ.setdefault(
 os.environ.setdefault("INTERNAL_TOKEN", "unit-test-token")
 
 from errors import InvalidPixPayload  # noqa: E402
-from models import PixAnalysis, PixTransaction  # noqa: E402
+from models import Account, Device, PixAnalysis, PixTransaction  # noqa: E402
 from resources import PixTransactionResource  # noqa: E402
 from app import create_app  # noqa: E402
 
@@ -68,9 +68,13 @@ def test_orm_maps_public_metadata_column_to_safe_python_attribute():
 
 
 def test_orm_contains_required_uniqueness_constraints():
+    account_constraints = {tuple(constraint.columns.keys()) for constraint in Account.__table__.constraints}
+    device_constraints = {tuple(constraint.columns.keys()) for constraint in Device.__table__.constraints}
     pix_constraints = {tuple(constraint.columns.keys()) for constraint in PixTransaction.__table__.constraints}
     analysis_constraints = {tuple(constraint.columns.keys()) for constraint in PixAnalysis.__table__.constraints}
 
+    assert ("participant", "branch", "account_number", "owner_document") in account_constraints
+    assert ("identifier",) in device_constraints
     assert ("external_id",) in pix_constraints
     assert ("transaction_id",) in analysis_constraints
     assert "pix_transactions_external_id_key" in {
@@ -85,6 +89,16 @@ def test_orm_contains_required_uniqueness_constraints():
 
 
 def test_models_compile_for_postgresql():
+    account_ddl = str(
+        __import__("sqlalchemy").schema.CreateTable(Account.__table__).compile(
+            dialect=postgresql.dialect()
+        )
+    )
+    device_ddl = str(
+        __import__("sqlalchemy").schema.CreateTable(Device.__table__).compile(
+            dialect=postgresql.dialect()
+        )
+    )
     transaction_ddl = str(
         __import__("sqlalchemy").schema.CreateTable(PixTransaction.__table__).compile(
             dialect=postgresql.dialect()
@@ -96,6 +110,33 @@ def test_models_compile_for_postgresql():
         )
     )
 
+    assert "VARCHAR(64)" in account_ddl
+    assert "VARCHAR(128)" in device_ddl
     assert "JSONB" in transaction_ddl
+    assert "INET" in transaction_ddl
+    assert "payer_account_id BIGINT NOT NULL" in transaction_ddl
+    assert "payee_account_id BIGINT NOT NULL" in transaction_ddl
+    assert "device_id BIGINT NOT NULL" in transaction_ddl
     assert "UUID" in analysis_ddl
     assert "FOREIGN KEY(transaction_id) REFERENCES pix_transactions (id)" in analysis_ddl
+
+
+def test_transaction_history_fields_are_typed_and_not_duplicated():
+    columns = PixTransaction.__table__.columns
+
+    assert str(columns["source_ip"].type) == "INET"
+    assert str(columns["source_channel"].type) == "VARCHAR(32)"
+    assert str(columns["external_id"].type) == "VARCHAR(128)"
+    assert str(columns["source_latitude"].type) == "DOUBLE PRECISION"
+    assert str(columns["source_longitude"].type) == "DOUBLE PRECISION"
+    assert {
+        "payer_document",
+        "payer_branch",
+        "payer_account_number",
+        "payee_participant",
+        "payee_branch",
+        "payee_account_number",
+        "payee_document",
+        "source_device_id",
+    }.isdisjoint(columns.keys())
+    assert PixAnalysis.__table__.columns["status"].type.name == "pix_analysis_status"

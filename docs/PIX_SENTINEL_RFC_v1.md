@@ -4,8 +4,8 @@
 |---|---|
 | Time | João Vitor Miranda Sousa e Mohamad Ahmad Barakat |
 | Atualização | 18/10/2026 |
-| Estado | Implementado; política R5 vigente e calibrável |
-| Política padrão | `mvp-risk-adaptive-v3-r5` |
+| Estado | Implementado; política R9 vigente e calibrável |
+| Política padrão | `mvp-risk-adaptive-v3-r9` |
 
 ## Contexto e objetivo
 
@@ -45,10 +45,11 @@ Fora do escopo:
 
 ### ADR-01 — política determinística por famílias
 
-A R5 contém 28 sinais em seis famílias: exposição/velocity, perfil,
+A R9 contém 29 sinais em seis famílias: exposição/velocity, perfil,
 relacionamento, acesso, temporal e rede do recebedor. Cada família possui teto;
-o score final é limitado a 100. Isso evita somar várias descrições do mesmo
-fenômeno como se fossem evidências independentes.
+a soma bruta é limitada a 100. Tipologias determinísticas de 2FA aplicam piso
+25 ao score operacional, preservando a soma bruta no snapshot. Isso evita somar
+descrições do mesmo fenômeno como se fossem evidências independentes.
 
 Escolhemos regras determinísticas porque o projeto não dispõe de base rotulada
 representativa para treinar e validar ML. A abordagem permite explicar cada
@@ -57,16 +58,35 @@ limiares são heurísticas de hackathon, não probabilidades calibradas.
 
 ### ADR-02 — fricção proporcional e rejeição protegida
 
-Score abaixo de 25 aprova; a partir de 25 recomenda 2FA. Score alto sozinho não
-rejeita. Rejeição ocorre por uma das três salvaguardas:
+O limiar geral recomenda 2FA a partir de 25. Quando uma tipologia forte exige
+2FA com soma bruta inferior, o score operacional recebe piso 25. Esse piso não
+participa das salvaguardas de rejeição. Score alto sozinho não rejeita; a
+rejeição ocorre por uma das três salvaguardas:
 
-1. oito tentativas e volume crítico do segmento em cinco minutos;
+1. rajada segmentada em cinco minutos: PF/indefinido com 12 tentativas e
+   R$ 50.000, ou PJ com 20 tentativas e R$ 200.000;
 2. deslocamento impossível combinado com anomalia de acesso;
 3. score ≥ 60, quatro famílias ativas e acesso ou rede do recebedor forte.
 
-Há ainda salvaguardas de 2FA para cold start material e para forte anomalia de
-acesso combinada com relação/rede. Essa ordem reduz rejeição por um único dado
-declarado ou por coincidência legítima.
+Valor alto por segmento contribui com 10 pontos: PF/indefinido a partir de
+R$ 5.000 e PJ a partir de R$ 15.000. Valor muito alto contribui com 20:
+PF/indefinido a partir de R$ 20.000 e PJ a partir de R$ 60.000. Assim, noite
+incomum não fricciona o primeiro nível (`10 + 5 = 15`), mas leva o segundo a
+2FA (`20 + 5 = 25`). Device e IP novos juntos continuam suficientes para fazer
+um valor alto convergir (`10 + 18 = 28`). Isso evita tratar um limiar heurístico
+como se fosse o limite bancário individual do cliente.
+
+Totais de 60 minutos e 24 horas exigem, além do valor, uma contagem mínima por
+segmento. Sem isso, uma única operação grande seria pontuada duas vezes: como
+valor atual e como suposto agregado. Fan-out também foi calibrado para 6/12
+destinatários em PF e 15/30 em PJ, respectivamente elevado/crítico.
+
+Há ainda salvaguardas de 2FA, com piso operacional 25, para cold start material,
+desvio crítico do perfil, ruptura de perfil com novo destinatário, conta-laranja
+recente, fan-in crítico, fan-out crítico, device compartilhado e forte anomalia
+de acesso combinada com relação/rede. Em PJ, device compartilhado só exige 2FA
+quando também há risco de perfil, relacionamento ou recebedor. Essa ordem reduz
+rejeição por um único dado declarado e mantém score e decisão coerentes.
 
 ### ADR-03 — histórico local, com perfis aprovados
 
@@ -103,12 +123,19 @@ Campos extras são aceitos e persistidos pelo contrato atual, mas não participa
 da identidade de negócio. Essa compatibilidade é deliberada e deve ser
 reavaliada se extras passarem a ter semântica antifraude.
 
-### ADR-06 — duas tabelas e commit único
+### ADR-06 — quatro entidades tipadas e commit único
 
-Uma tabela preserva a tentativa e alimenta o histórico; a outra preserva o
-parecer e as evidências da política. A separação evita misturar contrato de
-entrada com resultado e mantém a análise recuperável. As duas linhas são
-gravadas numa única transação; o HTTP 200 só é devolvido depois do commit.
+`accounts` e `devices` representam identidades reutilizáveis;
+`pix_transactions` preserva o evento e alimenta o histórico; `pix_analyses`
+preserva o parecer e as evidências. A transação referencia pagador, recebedor e
+device por FKs. IP usa `INET`, geo usa `DOUBLE PRECISION`, status usa enum e
+identificadores usam `VARCHAR` limitado. Isso evita duplicar textos e consultar
+campos antifraude dentro do JSONB.
+
+O payload original permanece como trilha de auditoria, suporte a campos extras
+e replay legado, não como modelo de consulta. O upsert das identidades, o evento
+e a análise são confirmados numa única transação; o HTTP 200 só é devolvido
+depois do commit.
 
 ### ADR-07 — serialização por pagador
 
@@ -136,6 +163,8 @@ em até 60 segundos, o sinal é crítico, mas só rejeita junto de acesso anôma
 Uma decisão `rejected` continua sendo HTTP 200: a análise terminou com sucesso.
 Erros de contrato, conflito e infraestrutura usam códigos HTTP separados. As
 rotas Pix requerem `INTERNAL-TOKEN`; toda resposta traz `X-Request-ID`.
+Decisões com 2FA ou rejeição também expõem códigos sanitizados em
+`metadata.risk_factors`; score, valores e identificadores permanecem internos.
 
 ## Alternativas consideradas
 
@@ -151,12 +180,23 @@ rotas Pix requerem `INTERNAL-TOKEN`; toda resposta traz `X-Request-ID`.
 
 ## Evidência de validação
 
-- matriz Docker: `176 passed, 0 skipped`, cobrindo R5, V1, V2 e V2 R2;
+- matriz Docker: cobre R9, V1, V2 e V2 R2 sem permitir testes pulados;
 - PostgreSQL real e descartável entre suítes;
-- benchmark local do POST: p95 de 17,39 ms com um worker e 137,96 ms com oito,
+- benchmark local do POST: p95 de 17,56 ms com um worker e 134,41 ms com oito,
   em 600 requisições medidas e todas HTTP 200;
 - cenários e testes de contrato, replay, concorrência, rollback, PF/PJ,
   geovelocidade, rede, cold start e desafios 2FA.
+
+A caracterização sintética ampliada contém 22 cenários definidos junto da
+política: R9 coincide com a intenção declarada nos 22, contra 7 na V1 e 8 na V2
+R2. Esse número comprova consistência com os casos projetados, não acurácia ou
+eficácia em dados reais. Nos casos A11 a A16, a soma bruta é 15 e salvaguardas
+específicas elevam o score operacional a 25 porque a tipologia exige 2FA.
+Quatro controles continuam aprovados: destinatário novo em valor habitual,
+conta jovem abaixo do valor material, device corporativo PJ compartilhado sem
+outro contexto e valor alto sem sinal convergente. O caso A21 comprova que valor
+alto mais noite incomum continua abaixo da fricção; o A22 exige 2FA quando o
+valor já está no nível muito alto.
 
 As medições são evidência do ambiente local, não SLA nem calibração de eficácia
 contra fraude real.
@@ -172,11 +212,14 @@ contra fraude real.
   relacionamento bancário.
 - O lock é específico de PostgreSQL e timeout/falha de banco ainda retornam 500
   genérico.
+- A origem não informa participante/ISPB; por isso uma mesma conta vista como
+  pagadora e recebedora pode formar duas identidades locais até existir uma
+  chave bancária global no contrato.
 - Campos extras persistidos aumentam superfície de dados; produção deve definir
   allowlist, retenção, criptografia e acesso.
 - Ainda faltam teste de carga de longa duração, base grande, múltiplas réplicas e
   contenção extrema do mesmo pagador.
 
 As regras completas estão no README, o contrato detalhado está em
-`PIX_SENTINEL_ROTAS_v1 (2).md`, e as métricas em
+`PIX_SENTINEL_ROTAS_v1.md`, e as métricas em
 `PIX_SENTINEL_ESTATISTICAS_TEMPO_API.md`.

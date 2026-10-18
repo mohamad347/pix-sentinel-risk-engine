@@ -178,7 +178,7 @@ def test_impossible_geo_velocity_with_access_takeover_is_rejected():
         relationship={
             "prior_counterparty_attempt_count": 0,
             "pair_attempt_count_15m": 1,
-            "distinct_counterparty_count_60m": 5,
+            "distinct_counterparty_count_60m": 6,
         },
         access={
             "device_observation": "newly_observed",
@@ -250,7 +250,7 @@ def test_many_independent_high_risk_families_can_reject_without_a_burst():
         relationship={
             "prior_counterparty_attempt_count": 0,
             "pair_attempt_count_15m": 1,
-            "distinct_counterparty_count_60m": 8,
+            "distinct_counterparty_count_60m": 12,
         },
         access={
             "device_observation": "newly_observed",
@@ -282,10 +282,10 @@ def test_many_independent_high_risk_families_can_reject_without_a_burst():
     burst = evidence(
         windows={
             "1m": {"attempt_count": 4, "amount_cents": 1_500_000},
-            "5m": {"attempt_count": 8, "amount_cents": 3_000_000},
-            "15m": {"attempt_count": 8, "amount_cents": 3_000_000},
-            "60m": {"attempt_count": 8, "amount_cents": 3_000_000},
-            "1440m": {"attempt_count": 8, "amount_cents": 3_000_000},
+            "5m": {"attempt_count": 12, "amount_cents": 5_000_000},
+            "15m": {"attempt_count": 12, "amount_cents": 5_000_000},
+            "60m": {"attempt_count": 12, "amount_cents": 5_000_000},
+            "1440m": {"attempt_count": 12, "amount_cents": 5_000_000},
         }
     )
     rejected = evaluate(375_000, burst)
@@ -363,6 +363,13 @@ def test_exactly_one_thousand_kmh_is_elevated_not_critical():
 
 def test_score_sixty_with_only_three_families_requires_2fa_not_rejection():
     snapshot = evidence(
+        windows={
+            "1m": {"attempt_count": 4, "amount_cents": 500_000},
+            "5m": {"attempt_count": 4, "amount_cents": 500_000},
+            "15m": {"attempt_count": 4, "amount_cents": 500_000},
+            "60m": {"attempt_count": 4, "amount_cents": 500_000},
+            "1440m": {"attempt_count": 4, "amount_cents": 500_000},
+        },
         access={
             "device_observation": "newly_observed",
             "ip_observation": "newly_observed",
@@ -383,15 +390,23 @@ def test_score_sixty_with_only_three_families_requires_2fa_not_rejection():
     assert decision["status"] == "two_factor_required"
 
 
-def test_exposure_only_2fa_recommends_standard_push_confirmation():
-    decision = evaluate(500_000)
+def test_high_absolute_amount_alone_is_a_low_friction_signal():
+    decision = evaluate(
+        500_000,
+        evidence(
+            profile={
+                "observation": "insufficient_history",
+                "prior_attempt_count": 0,
+                "history_span_seconds": 0,
+                "median_amount_cents": None,
+                "p90_amount_cents": None,
+            }
+        ),
+    )
 
-    assert decision["status"] == "two_factor_required"
-    assert decision["metadata"]["challenge"] == {
-        "type": "push_confirmation",
-        "level": "standard",
-        "status": "recommended",
-    }
+    assert decision["status"] == "approved"
+    assert decision["evidence_snapshot"]["policy"]["risk_score"] == 10
+    assert "challenge" not in decision["metadata"]
 
 
 def test_malformed_or_wrong_version_evidence_fails_closed_technically():
@@ -425,7 +440,7 @@ def test_device_shared_across_three_payers_is_a_global_access_signal():
     ]["triggered_signals"]
 
 
-def test_pf_and_pj_use_different_absolute_exposure_thresholds():
+def test_high_absolute_amount_is_segmented_but_not_sufficient_alone():
     insufficient_profile = {
         "observation": "insufficient_history",
         "prior_attempt_count": 0,
@@ -442,14 +457,185 @@ def test_pf_and_pj_use_different_absolute_exposure_thresholds():
         ),
     )
 
-    assert pf["status"] == "two_factor_required"
-    assert "ELEVATED_CURRENT_VALUE" in pf["evidence_snapshot"]["policy"][
+    assert pf["status"] == "approved"
+    assert pf["evidence_snapshot"]["policy"]["risk_score"] == 10
+    assert "HIGH_ABSOLUTE_AMOUNT" in pf["evidence_snapshot"]["policy"][
         "triggered_signals"
     ]
     assert pj["status"] == "approved"
-    assert "ELEVATED_CURRENT_VALUE" not in pj["evidence_snapshot"]["policy"][
+    assert "HIGH_ABSOLUTE_AMOUNT" not in pj["evidence_snapshot"]["policy"][
         "triggered_signals"
     ]
+
+
+def test_high_absolute_amount_and_unusual_nighttime_remain_below_friction():
+    decision = evaluate(
+        600_000,
+        evidence(
+            profile={
+                "observation": "insufficient_history",
+                "prior_attempt_count": 0,
+                "history_span_seconds": 0,
+                "median_amount_cents": None,
+                "p90_amount_cents": None,
+            },
+            temporal={
+                "transaction_clock_skew_seconds": 0,
+                "nighttime_observation": "unusual",
+                "geolocation": {"observation": "missing"},
+            },
+        ),
+    )
+
+    policy = decision["evidence_snapshot"]["policy"]
+    assert policy["families"]["exposure_velocity"] == 10
+    assert policy["families"]["temporal"] == 5
+    assert policy["risk_score"] == 15
+    assert decision["status"] == "approved"
+    assert {"HIGH_ABSOLUTE_AMOUNT", "UNUSUAL_NIGHTTIME"} <= set(
+        policy["triggered_signals"]
+    )
+
+
+def test_very_high_absolute_amount_and_unusual_nighttime_require_verification():
+    decision = evaluate(
+        2_000_000,
+        evidence(
+            profile={
+                "observation": "insufficient_history",
+                "prior_attempt_count": 0,
+                "history_span_seconds": 0,
+                "median_amount_cents": None,
+                "p90_amount_cents": None,
+            },
+            temporal={
+                "transaction_clock_skew_seconds": 0,
+                "nighttime_observation": "unusual",
+                "geolocation": {"observation": "missing"},
+            },
+        ),
+    )
+
+    policy = decision["evidence_snapshot"]["policy"]
+    assert policy["families"]["exposure_velocity"] == 20
+    assert policy["families"]["temporal"] == 5
+    assert policy["risk_score"] == 25
+    assert decision["status"] == "two_factor_required"
+    assert {"VERY_HIGH_ABSOLUTE_AMOUNT", "UNUSUAL_NIGHTTIME"} <= set(
+        policy["triggered_signals"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("payer_type", "count", "amount", "expected_status"),
+    (
+        ("pf", 11, 5_000_000, "two_factor_required"),
+        ("pf", 12, 4_999_999, "two_factor_required"),
+        ("pf", 12, 5_000_000, "rejected"),
+        ("pj", 19, 20_000_000, "two_factor_required"),
+        ("pj", 20, 19_999_999, "two_factor_required"),
+        ("pj", 20, 20_000_000, "rejected"),
+    ),
+)
+def test_critical_burst_requires_segmented_count_and_volume_boundaries(
+    payer_type, count, amount, expected_status
+):
+    windows = {
+        name: {"attempt_count": count, "amount_cents": amount}
+        for name in ("5m", "15m", "60m", "1440m")
+    }
+    windows["1m"] = {"attempt_count": 1, "amount_cents": 100_000}
+    decision = evaluate(
+        100_000,
+        evidence(
+            windows=windows,
+            party_types={"payer": payer_type, "payee": "pf"},
+        ),
+    )
+
+    assert decision["status"] == expected_status
+    assert decision["evidence_snapshot"]["policy"][
+        "critical_burst_safeguard"
+    ] is (expected_status == "rejected")
+
+
+@pytest.mark.parametrize(
+    ("payer_type", "distinct", "expected_signal", "expected_score"),
+    (
+        ("pf", 5, None, 0),
+        ("pf", 6, "ELEVATED_FAN_OUT_60M", 12),
+        ("pf", 11, "ELEVATED_FAN_OUT_60M", 12),
+        ("pf", 12, "CRITICAL_FAN_OUT_60M", 15),
+        ("pj", 14, None, 0),
+        ("pj", 15, "ELEVATED_FAN_OUT_60M", 12),
+        ("pj", 29, "ELEVATED_FAN_OUT_60M", 12),
+        ("pj", 30, "CRITICAL_FAN_OUT_60M", 15),
+    ),
+)
+def test_fan_out_uses_higher_segmented_boundaries(
+    payer_type, distinct, expected_signal, expected_score
+):
+    decision = evaluate(
+        snapshot=evidence(
+            relationship={
+                "prior_counterparty_attempt_count": 4,
+                "pair_attempt_count_15m": 1,
+                "distinct_counterparty_count_60m": distinct,
+            },
+            party_types={"payer": payer_type, "payee": "pf"},
+        )
+    )
+    policy = decision["evidence_snapshot"]["policy"]
+
+    assert policy["families"]["relationship"] == expected_score
+    if expected_signal is None:
+        assert not {
+            "ELEVATED_FAN_OUT_60M",
+            "CRITICAL_FAN_OUT_60M",
+        } & set(policy["triggered_signals"])
+    else:
+        assert expected_signal in policy["triggered_signals"]
+
+
+@pytest.mark.parametrize(
+    ("payer_type", "window", "count", "amount", "expected_signal"),
+    (
+        ("pf", "60m", 2, 1_500_000, None),
+        ("pf", "60m", 3, 1_500_000, "ELEVATED_ATTEMPT_TOTAL_60M"),
+        ("pj", "60m", 5, 5_000_000, None),
+        ("pj", "60m", 6, 5_000_000, "ELEVATED_ATTEMPT_TOTAL_60M"),
+        ("pf", "1440m", 4, 5_000_000, None),
+        ("pf", "1440m", 5, 5_000_000, "ELEVATED_ATTEMPT_TOTAL_24H"),
+        ("pj", "1440m", 9, 15_000_000, None),
+        ("pj", "1440m", 10, 15_000_000, "ELEVATED_ATTEMPT_TOTAL_24H"),
+    ),
+)
+def test_aggregate_totals_require_repeated_attempts(
+    payer_type, window, count, amount, expected_signal
+):
+    windows = {
+        "1m": {"attempt_count": 1, "amount_cents": 10_000},
+        "5m": {"attempt_count": 1, "amount_cents": 10_000},
+        "15m": {"attempt_count": 1, "amount_cents": 10_000},
+        "60m": {"attempt_count": 1, "amount_cents": 10_000},
+        "1440m": {"attempt_count": 1, "amount_cents": 10_000},
+    }
+    windows[window] = {"attempt_count": count, "amount_cents": amount}
+    decision = evaluate(
+        snapshot=evidence(
+            windows=windows,
+            party_types={"payer": payer_type, "payee": "pf"},
+        )
+    )
+    signals = decision["evidence_snapshot"]["policy"]["triggered_signals"]
+
+    if expected_signal is None:
+        assert not {
+            "ELEVATED_ATTEMPT_TOTAL_60M",
+            "ELEVATED_ATTEMPT_TOTAL_24H",
+        } & set(signals)
+    else:
+        assert expected_signal in signals
 
 
 def test_pj_fan_out_and_pj_recipient_fan_in_use_business_thresholds():
@@ -552,6 +738,8 @@ def test_first_observation_of_young_source_account_deterministically_requires_2f
     )
 
     policy = decision["evidence_snapshot"]["policy"]
+    assert policy["base_risk_score"] == 15
+    assert policy["risk_score"] == 25
     assert decision["status"] == "two_factor_required"
     assert decision["metadata"]["reason_code"] == "ADAPTIVE_COLD_START_VERIFICATION"
     assert policy["cold_start_verification_safeguard"] is True
@@ -581,7 +769,7 @@ def test_enhanced_facial_liveness_is_never_recommended_for_pj():
     assert pj["metadata"]["challenge"]["type"] == "push_confirmation"
 
 
-def test_new_device_ip_and_counterparty_require_verification_at_score_23():
+def test_new_device_ip_and_counterparty_apply_two_factor_score_floor():
     decision = evaluate(
         snapshot=evidence(
             counterparty="not_observed",
@@ -598,7 +786,8 @@ def test_new_device_ip_and_counterparty_require_verification_at_score_23():
     )
 
     policy = decision["evidence_snapshot"]["policy"]
-    assert policy["risk_score"] == 23
+    assert policy["base_risk_score"] == 23
+    assert policy["risk_score"] == 25
     assert policy["access_relationship_verification_safeguard"] is True
     assert decision["status"] == "two_factor_required"
     assert decision["metadata"]["reason_code"] == (
@@ -606,11 +795,12 @@ def test_new_device_ip_and_counterparty_require_verification_at_score_23():
     )
 
 
-def test_critical_median_deviation_requires_verification_below_score_threshold():
+def test_critical_median_deviation_applies_two_factor_score_floor():
     decision = evaluate(400_000)
     policy = decision["evidence_snapshot"]["policy"]
 
-    assert policy["risk_score"] == 15
+    assert policy["base_risk_score"] == 15
+    assert policy["risk_score"] == 25
     assert "CRITICAL_MEDIAN_DEVIATION" in policy["triggered_signals"]
     assert policy["critical_profile_verification_safeguard"] is True
     assert decision["status"] == "two_factor_required"
@@ -623,7 +813,8 @@ def test_behavioral_deviation_with_new_counterparty_requires_verification():
     decision = evaluate(150_000, evidence(counterparty="not_observed"))
     policy = decision["evidence_snapshot"]["policy"]
 
-    assert policy["risk_score"] == 15
+    assert policy["base_risk_score"] == 15
+    assert policy["risk_score"] == 25
     assert {"ELEVATED_MEDIAN_DEVIATION", "NEW_COUNTERPARTY"} <= set(
         policy["triggered_signals"]
     )
@@ -656,7 +847,8 @@ def test_first_seen_young_recipient_with_new_relationship_requires_verification(
     )
     policy = decision["evidence_snapshot"]["policy"]
 
-    assert policy["risk_score"] == 15
+    assert policy["base_risk_score"] == 15
+    assert policy["risk_score"] == 25
     assert {
         "NEW_COUNTERPARTY",
         "RECIPIENT_FIRST_SYSTEM_OBSERVATION",
@@ -680,7 +872,8 @@ def test_recipient_fan_in_alone_requires_verification():
     )
     policy = decision["evidence_snapshot"]["policy"]
 
-    assert policy["risk_score"] == 15
+    assert policy["base_risk_score"] == 15
+    assert policy["risk_score"] == 25
     assert policy["recipient_fan_in_verification_safeguard"] is True
     assert decision["status"] == "two_factor_required"
     assert decision["metadata"]["reason_code"] == "ADAPTIVE_RECIPIENT_FAN_IN_VERIFICATION"
@@ -692,13 +885,14 @@ def test_critical_fan_out_alone_requires_verification():
             relationship={
                 "prior_counterparty_attempt_count": 4,
                 "pair_attempt_count_15m": 1,
-                "distinct_counterparty_count_60m": 8,
+                "distinct_counterparty_count_60m": 12,
             }
         )
     )
     policy = decision["evidence_snapshot"]["policy"]
 
-    assert policy["risk_score"] == 15
+    assert policy["base_risk_score"] == 15
+    assert policy["risk_score"] == 25
     assert policy["critical_fan_out_verification_safeguard"] is True
     assert decision["status"] == "two_factor_required"
     assert decision["metadata"]["reason_code"] == "ADAPTIVE_CRITICAL_FAN_OUT_VERIFICATION"
@@ -725,6 +919,8 @@ def test_shared_device_requires_verification_for_pf_but_not_by_itself_for_pj():
     assert pf["evidence_snapshot"]["policy"][
         "shared_device_verification_safeguard"
     ] is True
+    assert pf["evidence_snapshot"]["policy"]["base_risk_score"] == 15
+    assert pf["evidence_snapshot"]["policy"]["risk_score"] == 25
     assert pf["status"] == "two_factor_required"
     assert pf["metadata"]["reason_code"] == "ADAPTIVE_SHARED_DEVICE_VERIFICATION"
     assert pj["evidence_snapshot"]["policy"][
@@ -751,7 +947,8 @@ def test_shared_device_and_new_counterparty_require_verification_for_pj():
     )
     policy = decision["evidence_snapshot"]["policy"]
 
-    assert policy["risk_score"] == 20
+    assert policy["base_risk_score"] == 20
+    assert policy["risk_score"] == 25
     assert policy["shared_device_verification_safeguard"] is True
     assert decision["status"] == "two_factor_required"
     assert decision["metadata"]["reason_code"] == "ADAPTIVE_SHARED_DEVICE_VERIFICATION"

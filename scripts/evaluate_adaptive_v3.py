@@ -124,6 +124,13 @@ def _v2_snapshot(v3: dict) -> dict:
 
 
 def scenarios() -> list[dict]:
+    insufficient_profile = {
+        "observation": "insufficient_history",
+        "prior_attempt_count": 0,
+        "history_span_seconds": 0,
+        "median_amount_cents": None,
+        "p90_amount_cents": None,
+    }
     cold = {
         "prior_attempt_count": 0,
         "counterparty": {"observation": "insufficient_history"},
@@ -171,14 +178,14 @@ def scenarios() -> list[dict]:
             "id": "A03",
             "description": "rajada crítica objetiva",
             "expected": "rejected",
-            "amount": 375_000,
+            "amount": 416_667,
             "override": {
                 "windows": {
                     "1m": {"attempt_count": 4, "amount_cents": 1_500_000},
-                    "5m": {"attempt_count": 8, "amount_cents": 3_000_000},
-                    "15m": {"attempt_count": 8, "amount_cents": 3_000_000},
-                    "60m": {"attempt_count": 8, "amount_cents": 3_000_000},
-                    "1440m": {"attempt_count": 8, "amount_cents": 3_000_000},
+                    "5m": {"attempt_count": 12, "amount_cents": 5_000_000},
+                    "15m": {"attempt_count": 12, "amount_cents": 5_000_000},
+                    "60m": {"attempt_count": 12, "amount_cents": 5_000_000},
+                    "1440m": {"attempt_count": 12, "amount_cents": 5_000_000},
                 }
             },
         },
@@ -206,7 +213,7 @@ def scenarios() -> list[dict]:
                 "contextual": {
                     "relationship": {
                         "prior_counterparty_attempt_count": 0,
-                        "distinct_counterparty_count_60m": 5,
+                        "distinct_counterparty_count_60m": 6,
                     },
                     "access": {
                         "device_observation": "newly_observed",
@@ -263,7 +270,7 @@ def scenarios() -> list[dict]:
                     },
                     "relationship": {
                         "prior_counterparty_attempt_count": 0,
-                        "distinct_counterparty_count_60m": 4,
+                        "distinct_counterparty_count_60m": 6,
                     },
                     "access": {
                         "device_observation": "newly_observed",
@@ -308,7 +315,7 @@ def scenarios() -> list[dict]:
                     },
                     "relationship": {
                         "prior_counterparty_attempt_count": 0,
-                        "distinct_counterparty_count_60m": 8,
+                        "distinct_counterparty_count_60m": 12,
                     },
                     "access": {
                         "device_observation": "newly_observed",
@@ -365,7 +372,7 @@ def scenarios() -> list[dict]:
             "amount": 10_000,
             "override": {
                 "contextual": {
-                    "relationship": {"distinct_counterparty_count_60m": 8}
+                    "relationship": {"distinct_counterparty_count_60m": 12}
                 }
             },
         },
@@ -457,6 +464,37 @@ def scenarios() -> list[dict]:
                 }
             },
         },
+        {
+            "id": "A20",
+            "description": "valor absoluto alto sem outro contexto de risco",
+            "expected": "approved",
+            "amount": 500_000,
+            "override": {"contextual": {"profile": insufficient_profile}},
+        },
+        {
+            "id": "A21",
+            "description": "valor alto em horário noturno incomum",
+            "expected": "approved",
+            "amount": 500_000,
+            "override": {
+                "contextual": {
+                    "profile": insufficient_profile,
+                    "temporal": {"nighttime_observation": "unusual"},
+                }
+            },
+        },
+        {
+            "id": "A22",
+            "description": "valor muito alto em horário noturno incomum",
+            "expected": "two_factor_required",
+            "amount": 2_000_000,
+            "override": {
+                "contextual": {
+                    "profile": insufficient_profile,
+                    "temporal": {"nighttime_observation": "unusual"},
+                }
+            },
+        },
     ]
 
 
@@ -488,6 +526,9 @@ def run() -> dict:
                     "families"
                 ]
             if name == "v3":
+                row["v3_base_score"] = decision["evidence_snapshot"]["policy"][
+                    "base_risk_score"
+                ]
                 row["v3_challenge"] = decision["metadata"].get("challenge")
                 row["v3_reason"] = decision["metadata"]["reason_code"]
                 row["v3_risk_factors"] = decision["metadata"].get(

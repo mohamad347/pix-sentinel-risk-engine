@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from controllers.pix_bootstrap_policy import PixBootstrapPolicy
 from controllers.pix_transaction_controller import PixTransactionController
-from models import PixAnalysis, PixTransaction
+from models import Account, Device, PixAnalysis, PixTransaction
 from repositories import PixTransactionRepository
 from tests.utils import PayloadGenerator, RequestGenerator
 
@@ -193,6 +193,16 @@ def test_window_boundaries_are_open_at_start_and_closed_at_current_attempt():
     session_factory = sessionmaker(bind=engine, autoflush=False)
     session = session_factory()
     try:
+        payer_account = Account(
+            participant=None,
+            branch="0001",
+            account_number="00001",
+            owner_document=f"DOC{payer}",
+            opening_at=admitted_at - timedelta(days=365),
+        )
+        device = Device(identifier=f"device-{uuid4()}")
+        session.add_all((payer_account, device))
+        session.flush()
         offsets_and_amounts = [
             (timedelta(minutes=60), 40),
             (timedelta(minutes=60) - timedelta(microseconds=1), 50),
@@ -202,6 +212,15 @@ def test_window_boundaries_are_open_at_start_and_closed_at_current_attempt():
         ]
         transactions = []
         for index, (offset, amount) in enumerate(offsets_and_amounts):
+            payee_account = Account(
+                participant="participant",
+                branch="0001",
+                account_number=f"{index}",
+                owner_document="payee",
+                opening_at=admitted_at - timedelta(days=30),
+            )
+            session.add(payee_account)
+            session.flush()
             transaction = PixTransaction(
                 external_id=f"pix-boundary-{uuid4()}",
                 request_fingerprint="0" * 64,
@@ -210,14 +229,13 @@ def test_window_boundaries_are_open_at_start_and_closed_at_current_attempt():
                 amount_cents=amount,
                 transaction_at=admitted_at,
                 received_at=admitted_at - offset,
-                payer_document=f"DOC-{payer}",
-                payer_branch="0001",
-                payer_account_number="00001",
-                payee_participant="participant",
-                payee_branch="0001",
-                payee_account_number=f"{index}",
-                payee_document="payee",
-                source_device_id="device",
+                payer_account_id=payer_account.id,
+                payee_account_id=payee_account.id,
+                device_id=device.id,
+                source_channel="app",
+                source_ip="198.51.100.23",
+                source_latitude=None,
+                source_longitude=None,
             )
             session.add(transaction)
             transactions.append(transaction)

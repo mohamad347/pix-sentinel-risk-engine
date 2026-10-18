@@ -16,8 +16,8 @@ DATABASE_NAME = make_url(DATABASE_URL).database if DATABASE_URL else ""
 INTEGRATION_ENABLED = os.environ.get("PIX_INTEGRATION_TESTS") == "1"
 SAFE_TEST_DATABASE = bool(DATABASE_NAME and "test" in DATABASE_NAME.lower())
 V3_ENABLED = os.environ.get(
-    "PIX_RISK_POLICY", "mvp-risk-adaptive-v3-r6"
-) == "mvp-risk-adaptive-v3-r6"
+    "PIX_RISK_POLICY", "mvp-risk-adaptive-v3-r9"
+) == "mvp-risk-adaptive-v3-r9"
 
 pytestmark = pytest.mark.skipif(
     not (INTEGRATION_ENABLED and SAFE_TEST_DATABASE and V3_ENABLED),
@@ -124,6 +124,38 @@ def test_v3_query_indexes_exist_on_clean_postgresql_schema():
                     )
                 ).scalars()
             )
+            typed_columns = dict(
+                connection.execute(
+                    text(
+                        "SELECT table_name || '.' || column_name, udt_name "
+                        "FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND ("
+                        "(table_name = 'pix_transactions' AND column_name IN "
+                        "('source_ip', 'source_latitude', 'source_longitude')) OR "
+                        "(table_name = 'pix_analyses' AND column_name = 'status'))"
+                    )
+                ).tuples().all()
+            )
+            entity_tables = set(
+                connection.execute(
+                    text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema = 'public' AND table_name IN "
+                        "('accounts', 'devices', 'pix_transactions', 'pix_analyses')"
+                    )
+                ).scalars()
+            )
+            schema_columns = {
+                name: (data_type, nullable)
+                for name, data_type, nullable in connection.execute(
+                    text(
+                        "SELECT table_name || '.' || column_name, udt_name, is_nullable "
+                        "FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND table_name IN "
+                        "('accounts', 'devices', 'pix_transactions', 'pix_analyses')"
+                    )
+                ).tuples()
+            }
     finally:
         engine.dispose()
 
@@ -133,6 +165,45 @@ def test_v3_query_indexes_exist_on_clean_postgresql_schema():
         "ix_pix_transactions_device_received_at",
         "ix_pix_transactions_source_ip_received_at",
     } <= names
+    assert entity_tables == {"accounts", "devices", "pix_transactions", "pix_analyses"}
+    assert typed_columns == {
+        "pix_transactions.source_ip": "inet",
+        "pix_transactions.source_latitude": "float8",
+        "pix_transactions.source_longitude": "float8",
+        "pix_analyses.status": "pix_analysis_status",
+    }
+    assert schema_columns == {
+        "accounts.id": ("int8", "NO"),
+        "accounts.participant": ("varchar", "YES"),
+        "accounts.branch": ("varchar", "NO"),
+        "accounts.account_number": ("varchar", "NO"),
+        "accounts.owner_document": ("varchar", "NO"),
+        "accounts.opening_at": ("timestamptz", "NO"),
+        "devices.id": ("int8", "NO"),
+        "devices.identifier": ("varchar", "NO"),
+        "pix_transactions.id": ("int8", "NO"),
+        "pix_transactions.external_id": ("varchar", "NO"),
+        "pix_transactions.request_fingerprint": ("bpchar", "NO"),
+        "pix_transactions.canonicalization_version": ("varchar", "NO"),
+        "pix_transactions.request_payload": ("jsonb", "NO"),
+        "pix_transactions.amount_cents": ("int8", "NO"),
+        "pix_transactions.transaction_at": ("timestamptz", "NO"),
+        "pix_transactions.received_at": ("timestamptz", "NO"),
+        "pix_transactions.payer_account_id": ("int8", "NO"),
+        "pix_transactions.payee_account_id": ("int8", "NO"),
+        "pix_transactions.device_id": ("int8", "NO"),
+        "pix_transactions.source_channel": ("varchar", "NO"),
+        "pix_transactions.source_ip": ("inet", "NO"),
+        "pix_transactions.source_latitude": ("float8", "YES"),
+        "pix_transactions.source_longitude": ("float8", "YES"),
+        "pix_analyses.analysis_key": ("uuid", "NO"),
+        "pix_analyses.transaction_id": ("int8", "NO"),
+        "pix_analyses.status": ("pix_analysis_status", "NO"),
+        "pix_analyses.metadata": ("jsonb", "NO"),
+        "pix_analyses.evidence_snapshot": ("jsonb", "NO"),
+        "pix_analyses.policy_version": ("varchar", "NO"),
+        "pix_analyses.evaluated_at": ("timestamptz", "NO"),
+    }
 
 
 def test_v3_postgresql_multisignal_snapshot_and_profile_are_prior_only():
@@ -187,7 +258,7 @@ def test_v3_postgresql_multisignal_snapshot_and_profile_are_prior_only():
     assert evidence["policy"]["families"]["profile"] == 15
     assert evidence["policy"]["families"]["relationship"] == 5
     assert evidence["policy"]["families"]["access"] == 20
-    assert _stored(current_id).policy_version == "mvp-risk-adaptive-v3-r6"
+    assert _stored(current_id).policy_version == "mvp-risk-adaptive-v3-r9"
 
 
 def test_v3_recipient_fanin_includes_current_attempt_at_exact_boundary():
@@ -319,28 +390,47 @@ def test_v3_rejected_location_does_not_contaminate_next_geo_baseline():
 
 
 def test_v3_pf_pj_segmentation_and_deterministic_cold_start_end_to_end():
+    known_payee = str(uuid4())
+    seed_id = f"pix-v3-known-payee-{uuid4()}"
+    seed_request = _payload(
+        seed_id,
+        str(uuid4()),
+        10_000,
+        payee=known_payee,
+        device=f"device-{uuid4()}",
+        ip="203.0.113.240",
+        payee_document="98765432100",
+    )
+    seed_request["transaction_date"] = datetime.now(timezone.utc).isoformat()
+    seed_status, seed_response = RequestGenerator.POST_pix_transaction(seed_request)
+
     pf_id = f"pix-v3-pf-value-{uuid4()}"
     pf_request = _payload(
         pf_id,
         str(uuid4()),
         600_000,
-        payee=str(uuid4()),
+        payee=known_payee,
         device=f"device-{uuid4()}",
+        ip="203.0.113.241",
         payer_document="12345678909",
         payee_document="98765432100",
     )
+    pf_request["transaction_date"] = datetime.now(timezone.utc).isoformat()
     pf_status, pf_response = RequestGenerator.POST_pix_transaction(pf_request)
+    pf_evidence = _stored(pf_id).evidence_snapshot
 
     pj_id = f"pix-v3-pj-value-{uuid4()}"
     pj_request = _payload(
         pj_id,
         str(uuid4()),
         600_000,
-        payee=str(uuid4()),
+        payee=known_payee,
         device=f"device-{uuid4()}",
+        ip="203.0.113.242",
         payer_document="00ABC123450001",
         payee_document="98765432100",
     )
+    pj_request["transaction_date"] = datetime.now(timezone.utc).isoformat()
     pj_status, pj_response = RequestGenerator.POST_pix_transaction(pj_request)
 
     cold_id = f"pix-v3-cold-start-{uuid4()}"
@@ -359,8 +449,16 @@ def test_v3_pf_pj_segmentation_and_deterministic_cold_start_end_to_end():
     cold_status, cold_response = RequestGenerator.POST_pix_transaction(cold_request)
     cold_evidence = _stored(cold_id).evidence_snapshot
 
-    assert pf_status == pj_status == cold_status == 200
-    assert pf_response["status"] == "two_factor_required"
+    assert seed_status == pf_status == pj_status == cold_status == 200
+    assert seed_response["status"] == "approved"
+    assert pf_response["status"] == "approved", {
+        "reason": pf_response["metadata"].get("reason_code"),
+        "score": pf_evidence["policy"]["risk_score"],
+        "families": pf_evidence["policy"]["families"],
+        "signals": pf_evidence["policy"]["triggered_signals"],
+    }
+    assert pf_evidence["policy"]["risk_score"] == 10
+    assert "HIGH_ABSOLUTE_AMOUNT" in pf_evidence["policy"]["triggered_signals"]
     assert pj_response["status"] == "approved"
     assert cold_response["status"] == "two_factor_required"
     assert cold_response["metadata"]["reason_code"] == (

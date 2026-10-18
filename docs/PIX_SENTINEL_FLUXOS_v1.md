@@ -1,7 +1,7 @@
 # PIX SENTINEL — fluxos implementados
 
 **Atualizado em:** 18/10/2026
-**Política padrão:** `mvp-risk-adaptive-v3-r5`
+**Política padrão:** `mvp-risk-adaptive-v3-r9`
 
 ## 1. Entrada da requisição
 
@@ -27,35 +27,44 @@ flowchart TD
     D -->|divergente| X[409 sem alterar o banco]
     D -->|novo| E[Advisory lock por pagador]
     E --> F[Reconsultar external_id]
-    F --> G[clock_timestamp e INSERT da tentativa]
-    G --> H[Agregados historicos e contexto]
-    H --> I[Score R5 e salvaguardas]
-    I --> J[INSERT da analise]
-    J --> K[Commit unico]
-    K --> L[200 key status metadata]
+    F --> G[Normalizar e reutilizar conta e device]
+    G --> H[clock_timestamp e INSERT da tentativa]
+    H --> I[Agregados por FKs e colunas tipadas]
+    I --> J[Score R9 e salvaguardas]
+    J --> K[INSERT da analise]
+    K --> L[Commit unico]
+    L --> M[200 key status metadata]
 ```
 
 Ordem efetiva:
 
 1. O JSON Schema exige a estrutura oficial, `amount` inteiro positivo, strings
-   não vazias e coordenadas nos intervalos geográficos.
+   com limites compatíveis com o banco e coordenadas nos intervalos geográficos.
 2. O controller rejeita `bool`/float/string em `amount`, ID com `/` ou espaços
-   nas bordas, timestamps sem fuso e números geográficos não finitos.
+   nas bordas, identificadores vazios ou com espaços nas bordas, IP que não
+   seja IPv4/IPv6, timestamps sem fuso e números geográficos não finitos.
 3. O payload oficial é canonizado e recebe fingerprint SHA-256.
 4. Um lookup inicial resolve rapidamente replay ou conflito já persistido.
 5. Para um ID novo, o repository adquire `pg_advisory_xact_lock` pela identidade
    do pagador, com `lock_timeout` de 1 segundo, e reconsulta o ID.
-6. `received_at` vem de `clock_timestamp()` após o lock. A tentativa é inserida
-   e materializada com `flush()` na transação ainda não confirmada.
-7. O repository calcula as evidências; a política avalia score, salvaguardas e
-   desafio recomendado.
-8. A análise recebe UUID, metadata, evidências, versão da política e horário
+6. O documento é normalizado; contas e device são reutilizados ou criados por
+   upsert concorrente. `received_at` vem de `clock_timestamp()` após o lock.
+7. A tentativa referencia essas entidades e materializa canal, IP e coordenadas
+   em tipos próprios. O repository calcula evidências por FKs e colunas tipadas,
+   sem extrair contexto histórico do JSONB.
+8. A política avalia score, salvaguardas e desafio recomendado.
+9. A análise recebe UUID, metadata, evidências, versão da política e horário
    UTC. O controller monta a resposta, faz commit e só então devolve HTTP 200.
 
 ## 3. Construção das evidências
 
 As janelas ativas são 1, 5, 15, 60 e 1.440 minutos. Todas usam o relógio do
 servidor e a fronteira `(T − W, T]`.
+
+As consultas ligam o evento a `accounts` e `devices` pelas chaves internas.
+Canal usa `VARCHAR(32)`, IP usa `INET` e geo usa `DOUBLE PRECISION`. O
+`request_payload` integral fica preservado para auditoria e replay, não para
+filtrar o histórico.
 
 | Evidência | Base usada |
 |---|---|
@@ -74,7 +83,7 @@ do segmento exige 2FA.
 
 ## 4. Score e decisão
 
-Os 28 sinais pertencem a seis famílias. Sinais correlacionados respeitam o teto
+Os 29 sinais pertencem a seis famílias. Sinais correlacionados respeitam o teto
 da família antes da soma global:
 
 | Família | Teto |
@@ -99,12 +108,20 @@ flowchart TD
     D -->|sim| R3[rejected]
     D -->|nao| E{Cold start material?}
     E -->|sim| T1[two_factor_required]
-    E -->|nao| F{Acesso >= 18 e risco de relacao/rede?}
+    E -->|nao| F{Tipologia antifraude forte?}
     F -->|sim| T2[two_factor_required]
-    F -->|nao| G{Score >= 25?}
+    F -->|nao| G{Acesso >= 18 e risco de relacao/rede?}
     G -->|sim| T3[two_factor_required]
-    G -->|nao| P[approved]
+    G -->|nao| H{Score >= 25?}
+    H -->|sim| T4[two_factor_required]
+    H -->|nao| P[approved]
 ```
+
+As tipologias fortes são: desvio crítico do perfil; desvio de perfil com
+destinatário novo; recebedor novo, jovem e material em relação nova; fan-in
+crítico; fan-out crítico; e device compartilhado. O último vale isoladamente
+para PF/indefinido; em PJ exige também risco de perfil, relacionamento ou rede.
+Essas salvaguardas reutilizam os 29 sinais calculados e não somam pontos.
 
 Em 2FA, a recomendação padrão é `push_confirmation`. Somente pagador PF recebe
 `facial_liveness`, e apenas quando acesso é pelo menos 18 junto de perfil ≥ 10,
@@ -163,5 +180,5 @@ uma falha técnica nunca é transformada em `approved` ou `rejected`.
 
 `scripts/run_all_tests.py` inicia a API internamente e executa as suítes em uma
 matriz de políticas contra PostgreSQL isolado. O banco é limpo entre etapas e o
-executor falha se houver teste pulado. Última execução registrada: `176 passed,
+executor falha se houver teste pulado. Última execução registrada: `225 passed,
 0 skipped`.

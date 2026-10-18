@@ -48,9 +48,18 @@ def test_post_persists_both_rows_and_get_returns_original_decision():
                 text(
                     """
                     SELECT COUNT(DISTINCT t.id) AS transaction_count,
-                           COUNT(DISTINCT a.analysis_key) AS analysis_count
+                           COUNT(DISTINCT a.analysis_key) AS analysis_count,
+                           COUNT(DISTINCT payer.id) AS payer_count,
+                           COUNT(DISTINCT payee.id) AS payee_count,
+                           COUNT(DISTINCT d.id) AS device_count,
+                           MIN(host(t.source_ip)) AS source_ip,
+                           MIN(t.source_channel) AS source_channel,
+                           MIN(d.identifier) AS device_identifier
                     FROM pix_transactions t
                     JOIN pix_analyses a ON a.transaction_id = t.id
+                    JOIN accounts payer ON payer.id = t.payer_account_id
+                    JOIN accounts payee ON payee.id = t.payee_account_id
+                    JOIN devices d ON d.id = t.device_id
                     WHERE t.external_id = :external_id
                     """
                 ),
@@ -61,6 +70,12 @@ def test_post_persists_both_rows_and_get_returns_original_decision():
 
     assert persisted.transaction_count == 1
     assert persisted.analysis_count == 1
+    assert persisted.payer_count == 1
+    assert persisted.payee_count == 1
+    assert persisted.device_count == 1
+    assert persisted.source_ip == payload["source"]["ip"]
+    assert persisted.source_channel == payload["source"]["channel"]
+    assert persisted.device_identifier == payload["source"]["device_id"]
 
     status, get_response = RequestGenerator.GET_pix_transaction(external_id)
     assert status == 200

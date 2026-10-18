@@ -28,9 +28,9 @@ def test_adaptive_v3_characterization_resolves_pj_false_rejection_without_fricti
     rows = {row["id"]: row for row in result["results"]}
 
     assert result["role"] == "synthetic_behavior_characterization_not_independent_holdout"
-    assert result["current_policy_version"] == "mvp-risk-adaptive-v3-r6"
-    assert result["total"] == 19
-    assert result["matches_intention"]["v3"] == 19
+    assert result["current_policy_version"] == "mvp-risk-adaptive-v3-r9"
+    assert result["total"] == 22
+    assert result["matches_intention"]["v3"] == 22
     assert rows["A02"]["v3_reason"] == "ADAPTIVE_COLD_START_VERIFICATION"
     assert "FIRST_OBSERVED_YOUNG_SOURCE_ACCOUNT" in rows["A02"][
         "v3_risk_factors"
@@ -44,9 +44,17 @@ def test_adaptive_v3_characterization_resolves_pj_false_rejection_without_fricti
     assert rows["A10"]["v3_status"] == "two_factor_required"
     for scenario_id in ("A11", "A12", "A13", "A14", "A15", "A16"):
         assert rows[scenario_id]["v3_status"] == "two_factor_required"
-        assert rows[scenario_id]["v3_score"] < 25
-    for scenario_id in ("A17", "A18", "A19"):
+        assert rows[scenario_id]["v3_base_score"] < 25
+        assert rows[scenario_id]["v3_score"] == 25
+    for scenario_id in ("A17", "A18", "A19", "A20", "A21"):
         assert rows[scenario_id]["v3_status"] == "approved"
+    assert rows["A20"]["v3_score"] == 10
+    assert rows["A21"]["v3_score"] == 15
+    assert rows["A22"]["v3_score"] == 25
+    assert rows["A22"]["v3_status"] == "two_factor_required"
+    assert {"VERY_HIGH_ABSOLUTE_AMOUNT", "UNUSUAL_NIGHTTIME"} <= set(
+        rows["A22"]["v3_risk_factors"]
+    )
     assert rows["A11"]["v3_reason"] == "ADAPTIVE_CRITICAL_PROFILE_VERIFICATION"
     assert rows["A12"]["v3_reason"] == (
         "ADAPTIVE_BEHAVIORAL_RELATIONSHIP_VERIFICATION"

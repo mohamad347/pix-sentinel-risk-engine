@@ -1,5 +1,7 @@
 -- Índices incrementais para as agregações locais da política adaptativa V3.
 -- Aplicar somente em uma base existente; instalações novas já usam database.sql.
+-- Etapa histórica: a migração 005 substitui estes índices pelos equivalentes
+-- baseados em FKs e pela coluna INET tipada.
 
 CREATE INDEX IF NOT EXISTS ix_pix_transactions_payee_received_at
     ON pix_transactions (

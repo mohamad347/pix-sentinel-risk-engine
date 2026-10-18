@@ -3,20 +3,20 @@
   "type": "object",
   "required": ["id", "amount", "transaction_date", "source_account", "destination_account", "source"],
   "properties": {
-    "id": {"type": "string", "minLength": 1},
+    "id": {"type": "string", "minLength": 1, "maxLength": 128},
     "amount": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
     "transaction_date": {"type": "string", "minLength": 1},
     "source_account": {
       "type": "object",
       "required": ["branch", "account_number", "opening_date", "owner"],
       "properties": {
-        "branch": {"type": "string", "minLength": 1},
-        "account_number": {"type": "string", "minLength": 1},
+        "branch": {"type": "string", "minLength": 1, "maxLength": 64},
+        "account_number": {"type": "string", "minLength": 1, "maxLength": 64},
         "opening_date": {"type": "string", "minLength": 1},
         "owner": {
           "type": "object",
           "required": ["document_number"],
-          "properties": {"document_number": {"type": "string", "minLength": 1}},
+          "properties": {"document_number": {"type": "string", "minLength": 1, "maxLength": 64}},
           "additionalProperties": true
         }
       },
@@ -26,14 +26,14 @@
       "type": "object",
       "required": ["participant", "branch", "account_number", "opening_date", "owner"],
       "properties": {
-        "participant": {"type": "string", "minLength": 1},
-        "branch": {"type": "string", "minLength": 1},
-        "account_number": {"type": "string", "minLength": 1},
+        "participant": {"type": "string", "minLength": 1, "maxLength": 64},
+        "branch": {"type": "string", "minLength": 1, "maxLength": 64},
+        "account_number": {"type": "string", "minLength": 1, "maxLength": 64},
         "opening_date": {"type": "string", "minLength": 1},
         "owner": {
           "type": "object",
           "required": ["document_number"],
-          "properties": {"document_number": {"type": "string", "minLength": 1}},
+          "properties": {"document_number": {"type": "string", "minLength": 1, "maxLength": 64}},
           "additionalProperties": true
         }
       },
@@ -43,9 +43,9 @@
       "type": "object",
       "required": ["device_id", "channel", "ip"],
       "properties": {
-        "device_id": {"type": "string", "minLength": 1},
-        "channel": {"type": "string", "minLength": 1},
-        "ip": {"type": "string", "minLength": 1},
+        "device_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "channel": {"type": "string", "minLength": 1, "maxLength": 32},
+        "ip": {"type": "string", "minLength": 1, "maxLength": 45},
         "geolocation": {
           "type": ["object", "null"],
           "required": ["latitude", "longitude"],
