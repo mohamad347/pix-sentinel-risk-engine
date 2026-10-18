@@ -10,6 +10,26 @@ de tentativas da conta pagadora e devolve um parecer explicável:
 O parecer não consulta saldo, não movimenta dinheiro, não comprova fraude e não
 executa autenticação adicional.
 
+## Arquitetura
+
+O projeto preserva o padrão do Base Service:
+
+```text
+HTTP → Resource → Controller → Repository → SQLAlchemy Model → PostgreSQL
+```
+
+- `src/resources/` expõe o contrato HTTP;
+- `src/controllers/` coordena validação, idempotência, histórico e política;
+- `src/repositories/` concentra locks e consultas PostgreSQL;
+- `src/models/` mapeia `pix_transactions` e `pix_analyses`;
+- `src/schemas/` valida o payload oficial com JSON Schema;
+- `src/errors/` mantém o envelope QI Tech;
+- `tests/unit/` testa contrato e política sem banco;
+- `tests/integration/` prova persistência e concorrência no PostgreSQL real.
+
+As rotas Pix exigem `INTERNAL-TOKEN`. A raiz e `/health_check` permanecem
+públicas para infraestrutura.
+
 ## Como o motor de decisão funciona
 
 `POST /pix/transaction` valida o JSON oficial e sua semântica. Um reenvio com o
@@ -37,13 +57,13 @@ externo, sem recalcular a política.
 Os valores abaixo são parâmetros experimentais para demonstração. Eles não
 foram calibrados em dados reais e não constituem política de produção.
 
-| Regra | Lógica | Parâmetros | Por quê |
-|---|---|---|---|
-| Valor elevado | Recomendar verificação adicional quando o valor atual atingir o limite | P1 `VALUE_2FA_CENTS = 500_000` centavos (R$ 5.000) | Uma transferência pontual elevada justifica fricção proporcional, mas nunca rejeição isolada |
-| Frequência elevada | Recomendar verificação adicional quando a janela de 5 minutos atingir o limite | P2 `COUNT_2FA_5M = 4` tentativas, incluindo a atual | Ritmo elevado pode indicar automação ou uso anômalo da conta |
-| Montante acumulado | Recomendar verificação adicional quando o total tentado em 60 minutos atingir o limite | P3 `TOTAL_2FA_60M_CENTS = 1_500_000` centavos (R$ 15.000) | Várias tentativas podem acumular exposição mesmo quando cada valor isolado é moderado |
-| Rajada crítica | Primeiro componente da rejeição: contagem de 5 minutos no limite crítico | P4 `COUNT_REJECT_5M = 8` tentativas | Uma rajada muito intensa eleva o risco, mas não basta sozinha para rejeitar |
-| Rajada e volume críticos | Rejeitar somente quando P4 e P5 ocorrerem simultaneamente | P5 `TOTAL_REJECT_5M_CENTS = 3_000_000` centavos (R$ 30.000), junto de P4 | Combina ritmo e volume tentado em uma heurística crítica; ainda não prova fraude |
+| Regra | Hipótese | Condição | Resultado | Justificativa |
+|---|---|---|---|---|
+| Valor elevado (P1) | Uma tentativa isolada pode concentrar exposição | `amount >= 500_000` centavos (R$ 5.000) | `two_factor_required` | Recomenda confirmação proporcional; valor sozinho nunca rejeita |
+| Frequência elevada (P2) | Ritmo alto pode indicar automação ou uso anômalo | `attempt_count_5m >= 4`, incluindo a atual | `two_factor_required` | Detecta concentração temporal, com risco conhecido de fricção legítima |
+| Montante acumulado (P3) | Tentativas moderadas podem acumular exposição | `amount_cents_60m >= 1_500_000` (R$ 15.000) | `two_factor_required` | Soma centavos inteiros e captura exposição agregada |
+| Contagem crítica (P4) | Rajada extrema eleva o risco | `attempt_count_5m >= 8` | Somente compõe a rejeição | Contagem isolada ainda pode ser uso legítimo intenso |
+| Volume crítico (P5) | Uma rajada pode concentrar grande exposição | `amount_cents_5m >= 3_000_000` (R$ 30.000) **junto de P4** | `rejected` | A rejeição exige P4 e P5; a combinação continua heurística e correlacionada |
 
 ## Como as regras viram decisão
 
@@ -62,6 +82,12 @@ Exemplos:
 - oitava tentativa em 5 minutos, totalizando R$ 30.000: `rejected`;
 - uma transferência pontual de R$ 30.000: `two_factor_required`, nunca rejeição
   apenas pelo valor.
+
+Cold start não adiciona risco por si só: ausência de histórico local não prova
+que seja o primeiro Pix bancário do cliente. PF e PJ usam os mesmos parâmetros,
+pois o motor não possui cadastro ou perfil econômico que sustente segmentação.
+Essa escolha pode gerar fricção em lotes legítimos de uma PJ e está registrada
+como limitação, não como comportamento ideal comprovado.
 
 O `metadata` público contém somente versão e motivo. O snapshot interno
 `pix-history-v1` registra contagens, somas em centavos, instante de admissão e
@@ -111,12 +137,52 @@ Esses rótulos descrevem intenção de cenários sintéticos, não verdade sobre
 fraudes reais. Como nenhuma v2 foi adotada, não há alegação de redução de falso
 positivo ou falso negativo.
 
+## Contrato HTTP
+
+### POST `/pix/transaction`
+
+Recebe o payload oficial e retorna HTTP `200` somente após o commit das duas
+tabelas. A chave pública é o UUID da análise e não o `id` externo do Pix.
+Reenvio canonicamente idêntico retorna exatamente a decisão persistida; o mesmo
+ID com conteúdo oficial diferente retorna `409 QIT002004`.
+
+Respostas sintéticas possíveis:
+
+```json
+{"key":"af66afaf-1a4a-4d94-9d55-00567fb9b21c","status":"approved","metadata":{"schema_version":"1.0","policy_version":"mvp-risk-experimental-v1","reason_code":"RISK_WITHIN_EXPERIMENTAL_POLICY","reason_description":"Risk is within the experimental antifraud policy."}}
+```
+
+```json
+{"key":"0210407f-f69b-475d-9af6-88a039acbe27","status":"two_factor_required","metadata":{"schema_version":"1.0","policy_version":"mvp-risk-experimental-v1","reason_code":"ADDITIONAL_VERIFICATION_RECOMMENDED","reason_description":"Additional verification is recommended by the experimental antifraud policy."}}
+```
+
+```json
+{"key":"37e93fa8-f942-4b68-87f9-78d8a91b2657","status":"rejected","metadata":{"schema_version":"1.0","policy_version":"mvp-risk-experimental-v1","reason_code":"SUSPICIOUS_BURST_AND_VOLUME","reason_description":"The request matched the experimental critical-risk combination."}}
+```
+
+### GET `/pix/transaction/{id}`
+
+Pesquisa pelo `id` externo recebido no POST e devolve a mesma estrutura pública
+persistida, sem reavaliar regras. ID inexistente retorna `404 QIT002002`.
+
+Erros usam o envelope QI Tech:
+
+```json
+{
+  "title": "Pix transaction conflict",
+  "description": "The Pix identifier is already associated with different transaction data.",
+  "translation": "O identificador Pix já está associado a dados de transação diferentes.",
+  "code": "QIT002004"
+}
+```
+
 ## Como rodar
 
 Uma instalação nova é inicializada por `database/database.sql`:
 
 ```bash
-docker compose up --build
+docker compose up --build -d
+docker compose ps
 ```
 
 A API atende em `http://localhost:3000`. As rotas Pix exigem:
@@ -161,10 +227,21 @@ python -m pytest -q
 O Compose de testes usa banco, credenciais e portas próprias. Os dados do
 PostgreSQL ficam em `tmpfs`, sem reutilizar volumes de desenvolvimento.
 
-Validação local executada em Windows com Docker Desktop, API e PostgreSQL nos
-contêineres isolados: 144 testes aprovados, nenhuma falha ou skip. Medições E2E
-sequenciais comparáveis, cada uma com 100 payloads sintéticos e pagadores
-distintos, obtiveram:
+Validação final em 18/10/2026, Windows e Docker Desktop, com a API em
+`APP_ENV=production` e PostgreSQL 16 isolado:
+
+| Comando | Tipo | Resultado | Tempo pytest |
+|---|---|---:|---:|
+| `python -m pytest -q tests/unit` | Unitário | 69 passed | 6,76 s |
+| `python -m pytest -q tests/integration` | PostgreSQL/API | 28 passed | 10,86 s |
+| `python -m pytest -q` | Suíte de produto | 97 passed | 10,90 s |
+
+Todos terminaram sem falhas ou skips no modo completo. O único aviso é a API
+depreciada `declarative_base()` do SQLAlchemy. `pytest.ini` restringe a coleta a
+`tests/`; testes históricos guardados em documentos não entram na contagem.
+
+Medições E2E sequenciais comparáveis, cada uma com 100 payloads sintéticos e
+pagadores distintos, obtiveram:
 
 | Versão | Rota | p50 | p95 | p99 |
 |---|---|---:|---:|---:|
@@ -176,9 +253,27 @@ distintos, obtiveram:
 Esses números descrevem apenas o ambiente local de teste; não são benchmark de
 produção nem estimativa de capacidade sob concorrência.
 
+Uma medição concorrente controlada com 80 POSTs, 8 workers, IDs e pagadores
+distintos obteve p50 285,24 ms, p95 343,95 ms, p99 353,43 ms e máximo 362,93 ms.
+Ela também é apenas evidência local, sem valor de SLA.
+
 O advisory lock por pagador usa `lock_timeout=1000ms`. Se a contenção exceder
 esse limite, a transação falha tecnicamente e sofre rollback; o cliente pode
 reconciliar reenviando o mesmo `external_id` e payload.
+
+## Demonstração reproduzível
+
+Com a API ativa, execute:
+
+```powershell
+python scripts/demo_pix_sentinel.py --base-url http://localhost:3000 --token default_token
+```
+
+O script usa somente a biblioteca padrão e dados sintéticos. Ele cria IDs
+distintos e comprova os três pareceres, GET, replay com a mesma resposta e
+conflito `409`. Na auditoria final, gerou exatamente 10 linhas em cada tabela:
+uma aprovação, uma recomendação por alto valor e oito tentativas da rajada; GET,
+replay e conflito não criaram registros adicionais.
 
 ## Exemplo de requisição
 
@@ -232,3 +327,10 @@ curl http://localhost:3000/pix/transaction/pix-000123 \
   negativos.
 - `two_factor_required` é recomendação; esta API não executa 2FA.
 - `approved` não autoriza liquidação e `rejected` não comprova fraude.
+
+## Documentos de entrega
+
+- [Matriz de negócio e resiliência](docs/PIX_SENTINEL_MATRIZ_NEGOCIO_E_RESILIENCIA.md)
+- [Auditoria dos requisitos oficiais](docs/PIX_SENTINEL_AUDITORIA_REQUISITOS_OFICIAIS.md)
+- [Defesa de negócio e roteiro de sete minutos](docs/PIX_SENTINEL_DEFESA_E_ROTEIRO.md)
+- [Organização do projeto](docs/como-o-projeto-e-organizado.md)
