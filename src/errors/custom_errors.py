@@ -51,3 +51,16 @@ class PixTransactionConflict(QIException):
             "The Pix identifier is already associated with different transaction data.",
             "O identificador Pix já está associado a dados de transação diferentes.",
         )
+
+
+class RiskPolicyUnavailable(QIException):
+    code = "QIT002005"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Risk policy unavailable",
+            self.code,
+            503,
+            "The antifraud policy could not evaluate this request.",
+            "A política antifraude não pôde avaliar esta solicitação.",
+        )
