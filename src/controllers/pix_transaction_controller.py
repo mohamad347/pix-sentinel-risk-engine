@@ -4,9 +4,8 @@ from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
 
-from constants import APP_ENV
 from controllers.base_controller import BaseController
-from controllers.pix_bootstrap_policy import PixBootstrapPolicy
+from controllers.pix_risk_policy import PixRiskPolicy
 from dtos import PixAnalysisDTO
 from errors import InvalidPixPayload, PixAnalysisNotFound, PixTransactionConflict
 from repositories import PixTransactionRepository
@@ -80,7 +79,7 @@ class PixTransactionController(BaseController):
     def __init__(self) -> None:
         super().__init__(__name__)
         self.pix_transaction_repository = PixTransactionRepository(self.context)
-        self.policy = PixBootstrapPolicy(APP_ENV)
+        self.policy = PixRiskPolicy()
 
     def create(self, payload: dict) -> dict:
         transaction_data = validate_and_extract_pix_data(payload)

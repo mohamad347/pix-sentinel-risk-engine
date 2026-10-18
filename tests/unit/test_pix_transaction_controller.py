@@ -391,6 +391,25 @@ def test_history_query_failure_rolls_back_without_fabricating_evidence():
     assert repository.analysis is None
 
 
+def test_policy_failure_is_technical_and_rolls_back_instead_of_approving():
+    from errors import RiskPolicyUnavailable
+
+    class FailingPolicy:
+        def evaluate(self, transaction_data, evidence_snapshot):
+            raise RiskPolicyUnavailable()
+
+    session = FakeSession()
+    repository = FakeRepository()
+    controller = controller_with(session, repository, FailingPolicy())
+
+    with pytest.raises(RiskPolicyUnavailable) as captured:
+        controller.create(valid_pix_payload())
+
+    assert captured.value.http_status == 503
+    assert session.events == ["rollback"]
+    assert repository.analysis is None
+
+
 def test_does_not_return_success_when_commit_fails():
     session = FakeSession(fail_commit=True)
     controller = controller_with(session, FakeRepository(), bootstrap_policy)

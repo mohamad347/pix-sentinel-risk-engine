@@ -2,112 +2,134 @@
 
 **Integrantes:** João Vitor Miranda Sousa e Mohamad Ahmad Barakat
 
-## Estado atual
+O PIX SENTINEL é um motor antifraude transacional para solicitações Pix ainda
+não executadas. Ele recebe os dados oficiais do Pix, consulta o histórico local
+de tentativas da conta pagadora e devolve um parecer explicável:
+`approved`, `two_factor_required` ou `rejected`.
 
-A Fatia 3 implementa a infraestrutura persistente, idempotente e a extração de
-histórico do motor. Cada nova tentativa é serializada por conta pagadora e gera
-evidências de frequência e montante em janelas experimentais de 5 e 60 minutos.
-Ainda não há regras reais de risco, score ou detecção de contraparte.
+O parecer não consulta saldo, não movimenta dinheiro, não comprova fraude e não
+executa autenticação adicional.
 
 ## Como o motor de decisão funciona
 
-`POST /pix/transaction` valida o contrato oficial, preserva o payload recebido,
-materializa os campos necessários às próximas consultas históricas e grava uma
-linha em `pix_transactions` e outra em `pix_analyses`. O commit ocorre antes da
-resposta HTTP. `GET /pix/transaction/{id}` lê o snapshot salvo, sem recalcular a
-decisão.
+`POST /pix/transaction` valida o JSON oficial e sua semântica. Um reenvio com o
+mesmo `id` e payload canônico devolve a análise original; o mesmo `id` associado
+a dados oficiais diferentes retorna `409`.
 
-Reenvios usam a canonização `pix-official-v1`. Ela considera somente os campos
-oficiais, normaliza instantes equivalentes para UTC e preserva identificadores
-textuais exatamente como recebidos. Campos extras são mantidos no primeiro
-`request_payload`, mas não mudam a identidade. Um reenvio equivalente devolve a
-decisão persistida; o mesmo `id` com dados oficiais diferentes devolve `409`.
+Para uma tentativa nova, o motor:
 
-Para atualizar uma base criada na Fatia 1, revise e execute manualmente
-`database/002_add_pix_canonicalization_version.sql` no destino correto. O script
-é incremental e não remove dados. Registros anteriores recebem a versão
-`phase-1-provisional`; a comparação de replay recalcula a identidade a partir do
-payload original para evitar conflitos falsos com o hash provisório.
+1. adquire um `pg_advisory_xact_lock` pela composição exata de documento,
+   agência e conta do pagador;
+2. registra `received_at` com `clock_timestamp()` do PostgreSQL;
+3. persiste a tentativa e extrai frequência e montante tentado nas janelas de
+   5 e 60 minutos;
+4. aplica a política determinística `mvp-risk-experimental-v1`;
+5. persiste tentativa, evidências e decisão no mesmo commit;
+6. retorna somente `key`, `status` e `metadata`.
 
-O pagador é identificado pela composição exata de documento, agência e número
-da conta de origem. Antes de admitir uma tentativa nova, o controller adquire
-um `pg_advisory_xact_lock` para essa identidade. Depois da espera, o instante de
-admissão vem de `clock_timestamp()` do PostgreSQL. As janelas usam
-`(T - W, T]`, incluem a tentativa atual e consideram tentativas persistidas de
-qualquer parecer. Replay não cria uma nova observação.
-
-O snapshot interno `pix-history-v1` registra `admitted_at`, quantidade anterior,
-indicador de primeira observação e, para cada janela, quantidade de tentativas e
-soma em centavos. Ele fica em `pix_analyses.evidence_snapshot` e não integra a
-resposta pública.
-
-`is_first_observed_attempt` significa apenas que não havia tentativa anterior
-para essa conta no PIX SENTINEL; não afirma que o cliente nunca realizou Pix no
-banco.
-
-Todas as rotas de negócio exigem o cabeçalho `INTERNAL-TOKEN`.
+As janelas usam `(T-W, T]` e incluem a tentativa atual uma vez. Todos os
+pareceres persistidos representam tentativas observadas; nenhum deles comprova
+liquidação. `GET /pix/transaction/{id}` recupera o snapshot original pelo ID
+externo, sem recalcular a política.
 
 ## Regras
 
-| Regra | Lógica | Parâmetros | Por quê |
-|-------|--------|------------|---------|
-| Bootstrap técnico | Retorna `approved` para um payload válido, deixando explícito que não houve avaliação de risco | Versão `bootstrap-dev-v1`; habilitada somente em `local`, `test` ou `development` | Permitir validar o fluxo técnico antes da aprovação da política antifraude |
+Os valores abaixo são parâmetros experimentais para demonstração. Eles não
+foram calibrados em dados reais e não constituem política de produção.
 
-A regra bootstrap é provisória e não representa um motor antifraude concluído.
-Em outros ambientes a API responde com indisponibilidade da política em vez de
-aprovar sem uma política habilitada.
+| Regra | Lógica | Parâmetros | Por quê |
+|---|---|---|---|
+| Valor elevado | Recomendar verificação adicional quando o valor atual atingir o limite | P1 `VALUE_2FA_CENTS = 500_000` centavos (R$ 5.000) | Uma transferência pontual elevada justifica fricção proporcional, mas nunca rejeição isolada |
+| Frequência elevada | Recomendar verificação adicional quando a janela de 5 minutos atingir o limite | P2 `COUNT_2FA_5M = 4` tentativas, incluindo a atual | Ritmo elevado pode indicar automação ou uso anômalo da conta |
+| Montante acumulado | Recomendar verificação adicional quando o total tentado em 60 minutos atingir o limite | P3 `TOTAL_2FA_60M_CENTS = 1_500_000` centavos (R$ 15.000) | Várias tentativas podem acumular exposição mesmo quando cada valor isolado é moderado |
+| Rajada crítica | Primeiro componente da rejeição: contagem de 5 minutos no limite crítico | P4 `COUNT_REJECT_5M = 8` tentativas | Uma rajada muito intensa eleva o risco, mas não basta sozinha para rejeitar |
+| Rajada e volume críticos | Rejeitar somente quando P4 e P5 ocorrerem simultaneamente | P5 `TOTAL_REJECT_5M_CENTS = 3_000_000` centavos (R$ 30.000), junto de P4 | Combina ritmo e volume tentado em uma heurística crítica; ainda não prova fraude |
 
 ## Como as regras viram decisão
 
-Nesta fatia existe apenas a decisão bootstrap. Os três pareceres e sua composição
-serão implementados depois que sinais e parâmetros forem aprovados.
+A precedência é determinística:
+
+1. `rejected` / `SUSPICIOUS_BURST_AND_VOLUME`: contagem de 5 minutos maior ou
+   igual a P4 **e** montante de 5 minutos maior ou igual a P5.
+2. `two_factor_required` / `ADDITIONAL_VERIFICATION_RECOMMENDED`: pelo menos
+   uma condição P1, P2 ou P3. O motor recomenda 2FA, mas não o executa.
+3. `approved` / `RISK_WITHIN_EXPERIMENTAL_POLICY`: nenhuma condição anterior.
+
+Exemplos:
+
+- primeira tentativa de R$ 100: `approved`;
+- primeira tentativa de R$ 5.000: `two_factor_required`;
+- oitava tentativa em 5 minutos, totalizando R$ 30.000: `rejected`;
+- uma transferência pontual de R$ 30.000: `two_factor_required`, nunca rejeição
+  apenas pelo valor.
+
+O `metadata` público contém somente versão e motivo. O snapshot interno
+`pix-history-v1` registra contagens, somas em centavos, instante de admissão e
+códigos dos sinais acionados, sem documento, conta, IP ou geolocalização.
 
 ## Como rodar
 
-Para uma instalação nova, o Compose inicializa o PostgreSQL com
-`database/database.sql`:
+Uma instalação nova é inicializada por `database/database.sql`:
 
 ```bash
 docker compose up --build
 ```
 
-O comando acima usa `APP_ENV=local` e `INTERNAL_TOKEN=default_token` por padrão.
-Não aplique o arquivo de inicialização sobre um banco existente sem revisar uma
-atualização incremental própria para esse ambiente.
+A API atende em `http://localhost:3000`. As rotas Pix exigem:
 
-Bases criadas antes da Fatia 3 devem receber, após revisão do destino, o índice
-incremental de `database/003_add_pix_payer_history_index.sql`. O script apenas
-cria o índice composto necessário às consultas históricas.
+```text
+INTERNAL-TOKEN: default_token
+```
+
+Para bancos criados em fatias anteriores, revisar e aplicar no destino correto:
+
+- `database/002_add_pix_canonicalization_version.sql`;
+- `database/003_add_pix_payer_history_index.sql`.
+
+Esses arquivos são incrementais. Não aplique `database/database.sql` sobre uma
+base existente.
 
 ## Como testar
 
-Os testes unitários não acessam o banco:
+Em um ambiente virtual com `requirements-dev.txt` instalado, o comando padrão
+funciona diretamente da raiz:
 
 ```powershell
-$env:PYTHONPATH = "src"
-python -m pytest tests/unit -q
+python -m pytest -q
 ```
 
-Os testes de integração Pix exigem uma API ativa e um PostgreSQL descartável. Há
-duas travas deliberadas: `PIX_INTEGRATION_TESTS=1` e o nome do banco em
-`DATABASE_URL` precisa conter `test`.
+Sem opt-in, testes que exigem API/PostgreSQL são ignorados de forma explícita.
+Para executar a suíte completa no ambiente descartável e isolado:
 
 ```powershell
 docker compose -p pix-sentinel-tests -f docker-compose.test.yml up --build -d
+
+$env:APP_ENV = "test"
 $env:DATABASE_URL = "postgresql+psycopg2://pix_test:pix_test@localhost:55432/pix_sentinel_test"
 $env:PIX_INTEGRATION_TESTS = "1"
-$env:APP_ENV = "test"
-$env:PYTHONPATH = "src"
 $env:SERVER_LOCALHOST = "localhost"
 $env:API_PORT = "3300"
 $env:INTERNAL_TOKEN = "pix-test-token"
-python -m pytest tests/integration/pix -q
+
+python -m pytest -q
 ```
 
-O Compose de testes usa nomes, portas e credenciais próprias. O diretório de
-dados do PostgreSQL fica em `tmpfs`, sem reutilizar volumes de desenvolvimento.
+O Compose de testes usa banco, credenciais e portas próprias. Os dados do
+PostgreSQL ficam em `tmpfs`, sem reutilizar volumes de desenvolvimento.
 
-## Exemplo de POST
+Validação local executada em Windows com Docker Desktop, API e PostgreSQL nos
+contêineres isolados: 138 testes aprovados, nenhuma falha ou skip. Uma medição
+E2E sequencial com 100 payloads sintéticos e pagadores distintos obteve:
+
+| Rota | p50 | p95 | p99 |
+|---|---:|---:|---:|
+| POST `/pix/transaction` | 75,18 ms | 111,65 ms | 148,35 ms |
+| GET `/pix/transaction/{id}` | 9,95 ms | 15,31 ms | 19,52 ms |
+
+Esses números descrevem apenas o ambiente local de teste; não são benchmark de
+produção nem estimativa de capacidade sob concorrência.
+
+## Exemplo de requisição
 
 ```bash
 curl -X POST http://localhost:3000/pix/transaction \
@@ -119,28 +141,42 @@ curl -X POST http://localhost:3000/pix/transaction \
     "transaction_date": "2026-10-17T22:15:00-03:00",
     "source_account": {
       "branch": "0001",
-      "account_number": "88213",
+      "account_number": "00088213",
       "opening_date": "2025-03-02T10:00:00-03:00",
-      "owner": {"document_number": "123.456.789-09"}
+      "owner": {"document_number": "00000000000"}
     },
     "destination_account": {
-      "participant": "60701190",
-      "branch": "3675",
-      "account_number": "10442",
+      "participant": "060701190",
+      "branch": "03675",
+      "account_number": "00010442",
       "opening_date": "2026-10-10T09:00:00-03:00",
-      "owner": {"document_number": "987.654.321-00"}
+      "owner": {"document_number": "11111111111"}
     },
     "source": {
-      "device_id": "dvc-9f2c71a8",
+      "device_id": "device-demo",
       "channel": "app",
       "ip": "198.51.100.23"
     }
   }'
 ```
 
-## Exemplo de GET
+Consulta do snapshot persistido:
 
 ```bash
 curl http://localhost:3000/pix/transaction/pix-000123 \
   -H "INTERNAL-TOKEN: default_token"
 ```
+
+## Limitações
+
+- O histórico contém somente tentativas válidas observadas pelo PIX SENTINEL.
+- `is_first_observed_attempt` não significa que o cliente nunca realizou Pix.
+- Contagens e somas representam tentativas, não operações liquidadas.
+- Não há reputação externa, perfil bancário cadastrado ou detecção enriquecida
+  de contraparte.
+- Device, IP e geolocalização são declarados pelo payload e não autenticam o
+  titular.
+- Os parâmetros são heurísticos e podem produzir falsos positivos ou falsos
+  negativos.
+- `two_factor_required` é recomendação; esta API não executa 2FA.
+- `approved` não autoriza liquidação e `rejected` não comprova fraude.

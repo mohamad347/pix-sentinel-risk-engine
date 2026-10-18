@@ -5,6 +5,7 @@ class PayloadGenerator:
     def create_pix_transaction_payload(external_id: str = None, include_geolocation: bool = True) -> dict:
         if external_id is None:
             external_id = f"pix-{uuid4()}"
+        payer_suffix = uuid4().hex
 
         payload = {
             "id": external_id,
@@ -12,9 +13,9 @@ class PayloadGenerator:
             "transaction_date": "2026-10-17T22:15:00-03:00",
             "source_account": {
                 "branch": "0001",
-                "account_number": "00088213",
+                "account_number": f"TEST-{payer_suffix}",
                 "opening_date": "2025-03-02T10:00:00-03:00",
-                "owner": {"document_number": "00ABC12345000199"},
+                "owner": {"document_number": f"TEST-DOC-{payer_suffix}"},
             },
             "destination_account": {
                 "participant": "060701190",

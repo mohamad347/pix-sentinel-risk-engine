@@ -1,5 +1,15 @@
+import os
+
+import pytest
+
 from tests.utils import INTERNAL_TOKEN
 from tests.utils.requisition import ClientRequisition
+
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("PIX_INTEGRATION_TESTS") != "1",
+    reason="requires PIX_INTEGRATION_TESTS=1 and an active isolated test API",
+)
 
 
 # As frases em português que o cliente lê no campo "translation" das
