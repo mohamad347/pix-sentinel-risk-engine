@@ -38,8 +38,8 @@ def register_request_logger_middleware(application: FastAPI) -> None:
             return await call_next(request)
 
         # O que veio depois do "?" no endereço entra no log de entrada:
-        # é metade do pedido, e sem ele a linha "GET /sample_entities"
-        # não diz qual página alguém pediu.
+        # é metade do pedido, e sem ele a linha de log não diz quais
+        # filtros alguém enviou.
         #
         # E fica a lição pelo avesso: se a query string vai parar no
         # log, ela NÃO é lugar para segredo. Um token na URL acaba

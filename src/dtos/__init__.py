@@ -1,1 +1,1 @@
-from dtos.sample_entity_dto import SampleEntityDTO
+from dtos.pix_analysis_dto import PixAnalysisDTO

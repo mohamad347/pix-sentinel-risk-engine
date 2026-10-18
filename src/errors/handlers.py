@@ -11,6 +11,7 @@ from errors.base_error import (
     MethodNotAllowed,
     NotFoundResource,
 )
+from errors.custom_errors import InvalidPixPayload
 from utils.logger import get_logger
 
 
@@ -75,6 +76,9 @@ def register_error_handlers(application: FastAPI) -> None:
 
         description = describe_validation_error(first_error)
         origin = first_error.get("loc", [""])[0]
+
+        if request.method == "POST" and request.url.path == "/pix/transaction":
+            return qi_exception_to_response(InvalidPixPayload())
 
         # Este ramo NAO e alcancado hoje, e vale saber por que — e a
         # unica pista de que existem duas validacoes neste projeto, nao
