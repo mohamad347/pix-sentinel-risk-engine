@@ -112,6 +112,9 @@ class PixTransactionController(BaseController):
             evidence_snapshot = build_evidence_snapshot(
                 admitted_at=transaction.received_at,
                 prior_attempt_count=history["prior_attempt_count"],
+                prior_counterparty_attempt_count=history[
+                    "prior_counterparty_attempt_count"
+                ],
                 windows=history["windows"],
             )
             decision = self.policy.evaluate(transaction_data, evidence_snapshot)

@@ -73,6 +73,7 @@ class FakeRepository:
         self.admitted_at = datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc)
         self.history = {
             "prior_attempt_count": 0,
+            "prior_counterparty_attempt_count": 0,
             "windows": {
                 5: {"attempt_count": 1, "amount_cents": 150000},
                 60: {"attempt_count": 1, "amount_cents": 150000},
@@ -184,6 +185,7 @@ def test_create_persists_transaction_and_analysis_before_commit():
     assert repository.transaction.received_at == repository.admitted_at
     assert repository.analysis.evidence_snapshot == bootstrap_policy.evidence_snapshot
     assert repository.analysis.evidence_snapshot["is_first_observed_attempt"] is True
+    assert repository.analysis.evidence_snapshot["counterparty"]["observation"] == "insufficient_history"
     assert repository.analysis.evidence_snapshot["windows"]["5m"] == {
         "attempt_count": 1,
         "amount_cents": 150000,

@@ -28,6 +28,7 @@ def test_builds_small_versioned_evidence_without_payer_identifiers():
     evidence = build_evidence_snapshot(
         admitted_at=admitted_at,
         prior_attempt_count=1,
+        prior_counterparty_attempt_count=1,
         windows={
             5: {"attempt_count": 2, "amount_cents": 2501},
             60: {"attempt_count": 3, "amount_cents": 5001},
@@ -41,6 +42,13 @@ def test_builds_small_versioned_evidence_without_payer_identifiers():
         "admitted_at": "2026-10-18T15:00:00.000000Z",
         "prior_attempt_count": 1,
         "is_first_observed_attempt": False,
+        "counterparty": {
+            "schema_version": "pix-counterparty-v1",
+            "prior_attempt_count": 1,
+            "observation": "observed",
+            "is_previously_observed": True,
+            "is_unobserved_with_payer_history": False,
+        },
         "windows": {
             "5m": {"attempt_count": 2, "amount_cents": 2501},
             "60m": {"attempt_count": 3, "amount_cents": 5001},
@@ -53,7 +61,32 @@ def test_first_observed_attempt_is_derived_from_explicit_prior_count():
     evidence = build_evidence_snapshot(
         admitted_at=datetime(2026, 10, 18, tzinfo=timezone.utc),
         prior_attempt_count=0,
+        prior_counterparty_attempt_count=0,
         windows={5: {"attempt_count": 1, "amount_cents": 99}},
     )
 
     assert evidence["is_first_observed_attempt"] is True
+    assert evidence["counterparty"] == {
+        "schema_version": "pix-counterparty-v1",
+        "prior_attempt_count": 0,
+        "observation": "insufficient_history",
+        "is_previously_observed": None,
+        "is_unobserved_with_payer_history": None,
+    }
+
+
+def test_marks_unobserved_counterparty_only_when_payer_has_prior_history():
+    evidence = build_evidence_snapshot(
+        admitted_at=datetime(2026, 10, 18, tzinfo=timezone.utc),
+        prior_attempt_count=2,
+        prior_counterparty_attempt_count=0,
+        windows={5: {"attempt_count": 1, "amount_cents": 99}},
+    )
+
+    assert evidence["counterparty"] == {
+        "schema_version": "pix-counterparty-v1",
+        "prior_attempt_count": 0,
+        "observation": "not_observed",
+        "is_previously_observed": False,
+        "is_unobserved_with_payer_history": True,
+    }

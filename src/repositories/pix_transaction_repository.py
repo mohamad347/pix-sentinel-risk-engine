@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import func, text
+from sqlalchemy import and_, func, text
 from sqlalchemy.orm import contains_eager
 
 from database import Context
@@ -34,10 +34,20 @@ class PixTransactionRepository:
         transaction: PixTransaction,
         windows_minutes: tuple[int, ...],
     ) -> dict:
+        is_prior_transaction = PixTransaction.id != transaction.id
+        is_same_counterparty = and_(
+            PixTransaction.payee_participant == transaction.payee_participant,
+            PixTransaction.payee_branch == transaction.payee_branch,
+            PixTransaction.payee_account_number == transaction.payee_account_number,
+            PixTransaction.payee_document == transaction.payee_document,
+        )
         columns = [
             func.count(PixTransaction.id)
-            .filter(PixTransaction.id != transaction.id)
-            .label("prior_attempt_count")
+            .filter(is_prior_transaction)
+            .label("prior_attempt_count"),
+            func.count(PixTransaction.id)
+            .filter(is_prior_transaction, is_same_counterparty)
+            .label("prior_counterparty_attempt_count"),
         ]
         for minutes in windows_minutes:
             in_window = PixTransaction.received_at > transaction.received_at - timedelta(
@@ -68,6 +78,9 @@ class PixTransactionRepository:
         values = row._mapping
         return {
             "prior_attempt_count": int(values["prior_attempt_count"]),
+            "prior_counterparty_attempt_count": int(
+                values["prior_counterparty_attempt_count"]
+            ),
             "windows": {
                 minutes: {
                     "attempt_count": int(values[f"attempt_count_{minutes}m"]),
