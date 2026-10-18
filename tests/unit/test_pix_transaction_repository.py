@@ -39,6 +39,7 @@ def test_advisory_lock_uses_stable_signed_payer_key():
     repository_with(session).acquire_payer_lock("001", "0001", "00009")
 
     assert session.calls == [
+        ("SET LOCAL lock_timeout = '1000ms'", None),
         (
             "SELECT pg_advisory_xact_lock(:lock_key)",
             {"lock_key": payer_advisory_lock_key("001", "0001", "00009")},
