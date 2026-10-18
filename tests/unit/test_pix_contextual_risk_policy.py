@@ -10,7 +10,9 @@ os.environ.setdefault(
 
 from controllers.pix_contextual_risk_policy import (  # noqa: E402
     CONTEXTUAL_POLICY_VERSION,
+    CONTEXTUAL_POLICY_VERSION_R2,
     DEFAULT_CONTEXTUAL_RISK_CONFIG,
+    REVISED_CONTEXTUAL_RISK_CONFIG,
     ContextualRiskConfig,
     ContextualScoreWeights,
     PixContextualRiskPolicy,
@@ -74,6 +76,86 @@ def evidence(
 
 def evaluate(amount, snapshot):
     return PixContextualRiskPolicy().evaluate({"amount_cents": amount}, snapshot)
+
+
+def evaluate_r2(amount, snapshot):
+    return PixContextualRiskPolicy(REVISED_CONTEXTUAL_RISK_CONFIG).evaluate(
+        {"amount_cents": amount}, snapshot
+    )
+
+
+def test_r2_c04_cold_start_value_boundary_requires_verification():
+    decision = evaluate_r2(
+        500_000,
+        evidence(amount_5m=500_000, amount_60m=500_000),
+    )
+
+    assert decision["status"] == "two_factor_required"
+    assert decision["policy_version"] == CONTEXTUAL_POLICY_VERSION_R2
+    assert decision["evidence_snapshot"]["policy"]["risk_score"] == 25
+
+
+def test_r2_c05b_familiar_critical_burst_is_rejected_by_score():
+    decision = evaluate_r2(
+        375_000,
+        evidence(
+            count_5m=8,
+            amount_5m=3_000_000,
+            amount_60m=3_000_000,
+            prior_count=7,
+            counterparty="observed",
+            device="observed",
+            device_prior_count=7,
+        ),
+    )
+
+    policy = decision["evidence_snapshot"]["policy"]
+    assert policy["families"]["exposure_velocity"] == 60
+    assert policy["risk_score"] == 60
+    assert policy["critical_burst_safeguard"] is True
+    assert decision["status"] == "rejected"
+
+
+@pytest.mark.parametrize(
+    "amount,expected_score,expected_status",
+    [
+        (499_999, 0, "approved"),
+        (500_000, 25, "two_factor_required"),
+        (500_001, 25, "two_factor_required"),
+    ],
+)
+def test_r2_value_boundary_is_exact_and_monotonic(amount, expected_score, expected_status):
+    decision = evaluate_r2(
+        amount,
+        evidence(amount_5m=amount, amount_60m=amount),
+    )
+
+    assert decision["evidence_snapshot"]["policy"]["risk_score"] == expected_score
+    assert decision["status"] == expected_status
+
+
+@pytest.mark.parametrize(
+    "count,total,expected_score,expected_status",
+    [
+        (7, 3_000_000, 25, "two_factor_required"),
+        (8, 2_999_999, 25, "two_factor_required"),
+        (8, 3_000_000, 60, "rejected"),
+        (9, 3_000_001, 60, "rejected"),
+    ],
+)
+def test_r2_critical_burst_boundaries_require_both_conditions(
+    count,
+    total,
+    expected_score,
+    expected_status,
+):
+    decision = evaluate_r2(
+        100_000,
+        evidence(count_5m=count, amount_5m=total, amount_60m=total),
+    )
+
+    assert decision["evidence_snapshot"]["policy"]["risk_score"] == expected_score
+    assert decision["status"] == expected_status
 
 
 def test_cold_start_and_optional_missing_context_are_neutral():

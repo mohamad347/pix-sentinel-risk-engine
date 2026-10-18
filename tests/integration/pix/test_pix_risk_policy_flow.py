@@ -17,6 +17,8 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 DATABASE_NAME = make_url(DATABASE_URL).database if DATABASE_URL else ""
 INTEGRATION_ENABLED = os.environ.get("PIX_INTEGRATION_TESTS") == "1"
 SAFE_TEST_DATABASE = bool(DATABASE_NAME and "test" in DATABASE_NAME.lower())
+V1_ENABLED = os.environ.get("PIX_RISK_POLICY") == "mvp-risk-experimental-v1"
+v1_only = pytest.mark.skipif(not V1_ENABLED, reason="requires the V1 risk policy")
 
 pytestmark = pytest.mark.skipif(
     not (INTEGRATION_ENABLED and SAFE_TEST_DATABASE),
@@ -66,6 +68,7 @@ def _evidence_for(external_id: str) -> dict:
         engine.dispose()
 
 
+@v1_only
 def test_http_post_and_get_produce_approved_decision():
     payer = str(uuid4())
     payload = _payload(f"pix-policy-approved-{uuid4()}", payer, 100_00)
@@ -77,6 +80,7 @@ def test_http_post_and_get_produce_approved_decision():
     )
 
 
+@v1_only
 def test_http_post_and_get_produce_two_factor_recommendation_without_executing_it():
     payer = str(uuid4())
     payload = _payload(f"pix-policy-2fa-{uuid4()}", payer, 500_000)
@@ -91,6 +95,7 @@ def test_http_post_and_get_produce_two_factor_recommendation_without_executing_i
     assert "authentication" not in response["metadata"]
 
 
+@v1_only
 def test_http_post_and_get_produce_rejected_decision_at_combined_boundary():
     payer = str(uuid4())
     responses = []

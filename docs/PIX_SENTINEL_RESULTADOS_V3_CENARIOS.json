@@ -1,0 +1,291 @@
+{
+  "matches_intention": {
+    "v1": 3,
+    "v2_r2": 4,
+    "v3": 9
+  },
+  "results": [
+    {
+      "description": "rotina habitual",
+      "expected": "approved",
+      "id": "A01",
+      "v1_status": "approved",
+      "v2_r2_families": {
+        "counterparty_diversity": 0,
+        "device": 0,
+        "exposure_velocity": 0,
+        "geolocation": 0,
+        "profile": 0
+      },
+      "v2_r2_score": 0,
+      "v2_r2_status": "approved",
+      "v3_challenge": null,
+      "v3_families": {
+        "access": 0,
+        "beneficiary_network": 0,
+        "exposure_velocity": 0,
+        "profile": 0,
+        "relationship": 0,
+        "temporal": 0
+      },
+      "v3_score": 0,
+      "v3_status": "approved"
+    },
+    {
+      "description": "R$ 5 mil em cold start",
+      "expected": "two_factor_required",
+      "id": "A02",
+      "v1_status": "two_factor_required",
+      "v2_r2_families": {
+        "counterparty_diversity": 0,
+        "device": 0,
+        "exposure_velocity": 25,
+        "geolocation": 0,
+        "profile": 0
+      },
+      "v2_r2_score": 25,
+      "v2_r2_status": "two_factor_required",
+      "v3_challenge": {
+        "level": "standard",
+        "status": "recommended",
+        "type": "push_confirmation"
+      },
+      "v3_families": {
+        "access": 0,
+        "beneficiary_network": 0,
+        "exposure_velocity": 25,
+        "profile": 0,
+        "relationship": 0,
+        "temporal": 0
+      },
+      "v3_score": 25,
+      "v3_status": "two_factor_required"
+    },
+    {
+      "description": "rajada crítica objetiva",
+      "expected": "rejected",
+      "id": "A03",
+      "v1_status": "rejected",
+      "v2_r2_families": {
+        "counterparty_diversity": 0,
+        "device": 0,
+        "exposure_velocity": 60,
+        "geolocation": 0,
+        "profile": 10
+      },
+      "v2_r2_score": 70,
+      "v2_r2_status": "rejected",
+      "v3_challenge": null,
+      "v3_families": {
+        "access": 0,
+        "beneficiary_network": 0,
+        "exposure_velocity": 60,
+        "profile": 10,
+        "relationship": 0,
+        "temporal": 0
+      },
+      "v3_score": 70,
+      "v3_status": "rejected"
+    },
+    {
+      "description": "acúmulo em 24h fora da janela de 60m",
+      "expected": "two_factor_required",
+      "id": "A04",
+      "v1_status": "approved",
+      "v2_r2_families": {
+        "counterparty_diversity": 0,
+        "device": 0,
+        "exposure_velocity": 0,
+        "geolocation": 0,
+        "profile": 0
+      },
+      "v2_r2_score": 0,
+      "v2_r2_status": "approved",
+      "v3_challenge": {
+        "level": "standard",
+        "status": "recommended",
+        "type": "push_confirmation"
+      },
+      "v3_families": {
+        "access": 0,
+        "beneficiary_network": 0,
+        "exposure_velocity": 25,
+        "profile": 0,
+        "relationship": 0,
+        "temporal": 0
+      },
+      "v3_score": 25,
+      "v3_status": "two_factor_required"
+    },
+    {
+      "description": "tomada de conta contextual",
+      "expected": "rejected",
+      "id": "A05",
+      "v1_status": "approved",
+      "v2_r2_families": {
+        "counterparty_diversity": 8,
+        "device": 10,
+        "exposure_velocity": 0,
+        "geolocation": 0,
+        "profile": 0
+      },
+      "v2_r2_score": 18,
+      "v2_r2_status": "approved",
+      "v3_challenge": null,
+      "v3_families": {
+        "access": 20,
+        "beneficiary_network": 0,
+        "exposure_velocity": 0,
+        "profile": 0,
+        "relationship": 12,
+        "temporal": 25
+      },
+      "v3_score": 57,
+      "v3_status": "rejected"
+    },
+    {
+      "description": "fan-in, conta jovem e IP compartilhado",
+      "expected": "two_factor_required",
+      "id": "A06",
+      "v1_status": "approved",
+      "v2_r2_families": {
+        "counterparty_diversity": 0,
+        "device": 0,
+        "exposure_velocity": 0,
+        "geolocation": 0,
+        "profile": 0
+      },
+      "v2_r2_score": 0,
+      "v2_r2_status": "approved",
+      "v3_challenge": {
+        "level": "standard",
+        "status": "recommended",
+        "type": "push_confirmation"
+      },
+      "v3_families": {
+        "access": 8,
+        "beneficiary_network": 20,
+        "exposure_velocity": 0,
+        "profile": 0,
+        "relationship": 0,
+        "temporal": 8
+      },
+      "v3_score": 36,
+      "v3_status": "two_factor_required"
+    },
+    {
+      "description": "desvio de perfil, novo destino e novo acesso",
+      "expected": "two_factor_required",
+      "id": "A07",
+      "v1_status": "approved",
+      "v2_r2_families": {
+        "counterparty_diversity": 8,
+        "device": 10,
+        "exposure_velocity": 0,
+        "geolocation": 0,
+        "profile": 15
+      },
+      "v2_r2_score": 33,
+      "v2_r2_status": "two_factor_required",
+      "v3_challenge": {
+        "level": "enhanced",
+        "status": "recommended",
+        "type": "facial_liveness"
+      },
+      "v3_families": {
+        "access": 18,
+        "beneficiary_network": 0,
+        "exposure_velocity": 0,
+        "profile": 15,
+        "relationship": 12,
+        "temporal": 0
+      },
+      "v3_score": 45,
+      "v3_status": "two_factor_required"
+    },
+    {
+      "description": "lote PJ legítimo na fronteira crítica",
+      "expected": "approved",
+      "id": "A08",
+      "v1_status": "rejected",
+      "v2_r2_families": {
+        "counterparty_diversity": 0,
+        "device": 0,
+        "exposure_velocity": 60,
+        "geolocation": 0,
+        "profile": 15
+      },
+      "v2_r2_score": 75,
+      "v2_r2_status": "rejected",
+      "v3_challenge": null,
+      "v3_families": {
+        "access": 0,
+        "beneficiary_network": 0,
+        "exposure_velocity": 60,
+        "profile": 15,
+        "relationship": 0,
+        "temporal": 0
+      },
+      "v3_score": 75,
+      "v3_status": "rejected"
+    },
+    {
+      "description": "convergência crítica de quatro famílias",
+      "expected": "rejected",
+      "id": "A09",
+      "v1_status": "approved",
+      "v2_r2_families": {
+        "counterparty_diversity": 15,
+        "device": 10,
+        "exposure_velocity": 0,
+        "geolocation": 0,
+        "profile": 15
+      },
+      "v2_r2_score": 40,
+      "v2_r2_status": "two_factor_required",
+      "v3_challenge": null,
+      "v3_families": {
+        "access": 20,
+        "beneficiary_network": 15,
+        "exposure_velocity": 0,
+        "profile": 15,
+        "relationship": 15,
+        "temporal": 0
+      },
+      "v3_score": 65,
+      "v3_status": "rejected"
+    },
+    {
+      "description": "velocidade geográfica impossível sem anomalia de acesso",
+      "expected": "two_factor_required",
+      "id": "A10",
+      "v1_status": "approved",
+      "v2_r2_families": {
+        "counterparty_diversity": 0,
+        "device": 0,
+        "exposure_velocity": 0,
+        "geolocation": 0,
+        "profile": 0
+      },
+      "v2_r2_score": 0,
+      "v2_r2_status": "approved",
+      "v3_challenge": {
+        "level": "standard",
+        "status": "recommended",
+        "type": "push_confirmation"
+      },
+      "v3_families": {
+        "access": 0,
+        "beneficiary_network": 0,
+        "exposure_velocity": 0,
+        "profile": 0,
+        "relationship": 0,
+        "temporal": 25
+      },
+      "v3_score": 25,
+      "v3_status": "two_factor_required"
+    }
+  ],
+  "role": "synthetic_behavior_characterization_not_independent_holdout",
+  "total": 10
+}

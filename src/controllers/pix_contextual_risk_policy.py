@@ -6,6 +6,7 @@ from utils.pix_context import CONTEXTUAL_EVIDENCE_SCHEMA_VERSION
 
 
 CONTEXTUAL_POLICY_VERSION = "mvp-risk-contextual-v2-candidate"
+CONTEXTUAL_POLICY_VERSION_R2 = "mvp-risk-contextual-v2-candidate-r2"
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,41 @@ DEFAULT_CONTEXTUAL_RISK_CONFIG = ContextualRiskConfig(
 )
 
 
+REVISED_CONTEXTUAL_RISK_CONFIG = ContextualRiskConfig(
+    policy_version=CONTEXTUAL_POLICY_VERSION_R2,
+    two_factor_score=25,
+    reject_score=60,
+    value_2fa_cents=500_000,
+    value_high_cents=1_500_000,
+    count_2fa_5m=4,
+    count_critical_5m=8,
+    total_2fa_60m_cents=1_500_000,
+    total_critical_5m_cents=3_000_000,
+    profile_min_prior_attempts=5,
+    profile_min_span_seconds=86_400,
+    profile_elevated_ratio_basis_points=30_000,
+    profile_critical_ratio_basis_points=80_000,
+    context_min_prior_attempts=3,
+    weights=ContextualScoreWeights(
+        value_signal=25,
+        value_high=25,
+        velocity_signal=25,
+        velocity_critical=25,
+        aggregate_signal=25,
+        aggregate_critical=25,
+        critical_combination_bonus=35,
+        exposure_cap=60,
+        profile_elevated=10,
+        profile_critical=15,
+        counterparty_novelty=5,
+        diversity_elevated=8,
+        diversity_critical=15,
+        device_new=10,
+        device_with_velocity=15,
+    ),
+)
+
+
 class PixContextualRiskPolicy:
     requires_contextual_evidence = True
 
@@ -127,6 +163,10 @@ class PixContextualRiskPolicy:
         config: ContextualRiskConfig = DEFAULT_CONTEXTUAL_RISK_CONFIG,
     ) -> None:
         self.config = config
+
+    @property
+    def requires_approved_profile_history(self) -> bool:
+        return self.config.policy_version == CONTEXTUAL_POLICY_VERSION_R2
 
     def evaluate(self, transaction_data: dict, evidence_snapshot: dict) -> dict:
         amount_cents = self._positive_int(transaction_data.get("amount_cents"))

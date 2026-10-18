@@ -14,7 +14,10 @@ from utils.pix_canonicalization import (
     parse_aware_datetime,
     pix_request_fingerprint,
 )
-from utils.pix_context import build_contextual_evidence
+from utils.pix_context import (
+    build_adaptive_contextual_evidence,
+    build_contextual_evidence,
+)
 from utils.pix_history import HISTORY_WINDOWS_MINUTES, build_evidence_snapshot
 
 
@@ -111,26 +114,90 @@ class PixTransactionController(BaseController):
                 "requires_contextual_evidence",
                 False,
             )
+            requires_adaptive_context = getattr(
+                self.policy,
+                "requires_adaptive_contextual_evidence",
+                False,
+            )
+            history_windows = getattr(
+                self.policy,
+                "history_windows_minutes",
+                HISTORY_WINDOWS_MINUTES,
+            )
             if requires_context:
                 history = self.pix_transaction_repository.get_payer_history(
                     transaction,
-                    HISTORY_WINDOWS_MINUTES,
+                    history_windows,
                     include_contextual=True,
+                    profile_approved_only=getattr(
+                        self.policy,
+                        "requires_approved_profile_history",
+                        False,
+                    ),
+                    include_adaptive=requires_adaptive_context,
                 )
-                contextual_evidence = build_contextual_evidence(
-                    current_payload=transaction.request_payload,
-                    admitted_at=transaction.received_at,
-                    prior_attempt_count=history["prior_attempt_count"],
-                    prior_device_attempt_count=history["prior_device_attempt_count"],
-                    prior_amount_median_cents=history["prior_amount_median_cents"],
-                    prior_history_span_seconds=history["prior_history_span_seconds"],
-                    distinct_counterparties=history["distinct_counterparties"],
-                    prior_geolocation=history["prior_geolocation"],
-                )
+                if requires_adaptive_context:
+                    contextual_evidence = build_adaptive_contextual_evidence(
+                        current_payload=transaction.request_payload,
+                        admitted_at=transaction.received_at,
+                        prior_attempt_count=history["prior_attempt_count"],
+                        prior_counterparty_attempt_count=history[
+                            "prior_counterparty_attempt_count"
+                        ],
+                        prior_device_attempt_count=history[
+                            "prior_device_attempt_count"
+                        ],
+                        prior_ip_attempt_count=history["prior_ip_attempt_count"],
+                        prior_channel_attempt_count=history[
+                            "prior_channel_attempt_count"
+                        ],
+                        prior_amount_median_cents=history[
+                            "prior_amount_median_cents"
+                        ],
+                        prior_amount_p90_cents=history["prior_amount_p90_cents"],
+                        prior_history_span_seconds=history[
+                            "prior_history_span_seconds"
+                        ],
+                        profile_attempt_count=history["prior_profile_attempt_count"],
+                        prior_nighttime_attempt_count=history[
+                            "prior_nighttime_attempt_count"
+                        ],
+                        pair_attempt_count_15m=history["pair_attempt_counts"][15],
+                        distinct_counterparties=history["distinct_counterparties"],
+                        distinct_devices=history["distinct_devices"],
+                        distinct_ips=history["distinct_ips"],
+                        prior_geolocation=history["prior_geolocation"],
+                        beneficiary_context=history["beneficiary_context"],
+                        access_network_context=history[
+                            "access_network_context"
+                        ],
+                    )
+                else:
+                    contextual_evidence = build_contextual_evidence(
+                        current_payload=transaction.request_payload,
+                        admitted_at=transaction.received_at,
+                        prior_attempt_count=history["prior_attempt_count"],
+                        prior_device_attempt_count=history[
+                            "prior_device_attempt_count"
+                        ],
+                        prior_amount_median_cents=history[
+                            "prior_amount_median_cents"
+                        ],
+                        prior_history_span_seconds=history[
+                            "prior_history_span_seconds"
+                        ],
+                        distinct_counterparties=history[
+                            "distinct_counterparties"
+                        ],
+                        prior_geolocation=history["prior_geolocation"],
+                        profile_attempt_count=history[
+                            "prior_profile_attempt_count"
+                        ],
+                    )
             else:
                 history = self.pix_transaction_repository.get_payer_history(
                     transaction,
-                    HISTORY_WINDOWS_MINUTES,
+                    history_windows,
                 )
                 contextual_evidence = None
             evidence_snapshot = build_evidence_snapshot(

@@ -1,4 +1,14 @@
-from sqlalchemy import BigInteger, CHAR, CheckConstraint, Column, DateTime, Index, String, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    CHAR,
+    CheckConstraint,
+    Column,
+    DateTime,
+    Index,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
@@ -33,6 +43,24 @@ class PixTransaction(Base):
             "payer_document",
             "payer_branch",
             "payer_account_number",
+            "received_at",
+        ),
+        Index(
+            "ix_pix_transactions_payee_received_at",
+            "payee_participant",
+            "payee_branch",
+            "payee_account_number",
+            "payee_document",
+            "received_at",
+        ),
+        Index(
+            "ix_pix_transactions_device_received_at",
+            "source_device_id",
+            "received_at",
+        ),
+        Index(
+            "ix_pix_transactions_source_ip_received_at",
+            text("(request_payload #>> '{source,ip}')"),
             "received_at",
         ),
     )

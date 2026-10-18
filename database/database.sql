@@ -31,3 +31,18 @@ CREATE TABLE pix_analyses(
 
 CREATE INDEX ix_pix_transactions_payer_received_at
     ON pix_transactions (payer_document, payer_branch, payer_account_number, received_at);
+
+CREATE INDEX ix_pix_transactions_payee_received_at
+    ON pix_transactions (
+        payee_participant,
+        payee_branch,
+        payee_account_number,
+        payee_document,
+        received_at
+    );
+
+CREATE INDEX ix_pix_transactions_device_received_at
+    ON pix_transactions (source_device_id, received_at);
+
+CREATE INDEX ix_pix_transactions_source_ip_received_at
+    ON pix_transactions ((request_payload #>> '{source,ip}'), received_at);

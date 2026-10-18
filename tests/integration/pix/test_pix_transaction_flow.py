@@ -35,7 +35,11 @@ def test_post_persists_both_rows_and_get_returns_original_decision():
 
     assert status == 200
     assert set(post_response) == {"key", "status", "metadata"}
-    assert post_response["status"] == "approved"
+    assert post_response["status"] in {
+        "approved",
+        "two_factor_required",
+        "rejected",
+    }
 
     engine = create_engine(DATABASE_URL)
     try:
