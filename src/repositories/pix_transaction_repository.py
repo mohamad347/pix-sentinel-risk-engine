@@ -9,6 +9,9 @@ from models import PixAnalysis, PixTransaction
 from utils.pix_history import payer_advisory_lock_key
 
 
+PAYER_LOCK_TIMEOUT_MILLISECONDS = 1000
+
+
 class PixTransactionRepository:
     def __init__(self, context: Context) -> None:
         self.session = context.db_session
@@ -21,6 +24,9 @@ class PixTransactionRepository:
 
     def acquire_payer_lock(self, document: str, branch: str, account_number: str) -> None:
         lock_key = payer_advisory_lock_key(document, branch, account_number)
+        self.session.execute(
+            text(f"SET LOCAL lock_timeout = '{PAYER_LOCK_TIMEOUT_MILLISECONDS}ms'")
+        )
         self.session.execute(
             text("SELECT pg_advisory_xact_lock(:lock_key)"),
             {"lock_key": lock_key},

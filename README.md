@@ -87,6 +87,9 @@ O contexto usa três estados:
 A tentativa atual é sempre excluída da contagem de contraparte. Replays não
 criam observações nem alteram snapshots persistidos.
 
+A matriz executada de hipóteses, decisões e falhas está em
+[`docs/PIX_SENTINEL_MATRIZ_NEGOCIO_E_RESILIENCIA.md`](docs/PIX_SENTINEL_MATRIZ_NEGOCIO_E_RESILIENCIA.md).
+
 ### Avaliação de uma política v2
 
 A política ativa continua sendo `mvp-risk-experimental-v1`. Não foi ativada nem
@@ -159,7 +162,7 @@ O Compose de testes usa banco, credenciais e portas próprias. Os dados do
 PostgreSQL ficam em `tmpfs`, sem reutilizar volumes de desenvolvimento.
 
 Validação local executada em Windows com Docker Desktop, API e PostgreSQL nos
-contêineres isolados: 141 testes aprovados, nenhuma falha ou skip. Medições E2E
+contêineres isolados: 144 testes aprovados, nenhuma falha ou skip. Medições E2E
 sequenciais comparáveis, cada uma com 100 payloads sintéticos e pagadores
 distintos, obtiveram:
 
@@ -172,6 +175,10 @@ distintos, obtiveram:
 
 Esses números descrevem apenas o ambiente local de teste; não são benchmark de
 produção nem estimativa de capacidade sob concorrência.
+
+O advisory lock por pagador usa `lock_timeout=1000ms`. Se a contenção exceder
+esse limite, a transação falha tecnicamente e sofre rollback; o cliente pode
+reconciliar reenviando o mesmo `external_id` e payload.
 
 ## Exemplo de requisição
 
