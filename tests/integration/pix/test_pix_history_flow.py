@@ -69,12 +69,20 @@ def test_first_and_second_attempt_persist_expected_history_evidence():
     assert "evidence_snapshot" not in second_public
     assert evidence[first_id]["prior_attempt_count"] == 0
     assert evidence[first_id]["is_first_observed_attempt"] is True
+    assert evidence[first_id]["counterparty"]["observation"] == "insufficient_history"
     assert evidence[first_id]["windows"]["5m"] == {
         "attempt_count": 1,
         "amount_cents": 101,
     }
     assert evidence[second_id]["prior_attempt_count"] == 1
     assert evidence[second_id]["is_first_observed_attempt"] is False
+    assert evidence[second_id]["counterparty"] == {
+        "schema_version": "pix-counterparty-v1",
+        "prior_attempt_count": 1,
+        "observation": "observed",
+        "is_previously_observed": True,
+        "is_unobserved_with_payer_history": False,
+    }
     assert evidence[second_id]["windows"]["5m"] == {
         "attempt_count": 2,
         "amount_cents": 303,
@@ -116,6 +124,7 @@ def test_replay_does_not_change_evidence_or_inflate_next_attempt():
     assert first_status == replay_status == 200
     assert replay_response == first_response
     assert evidence[first["id"]] == original_evidence
+    assert original_evidence["counterparty"]["prior_attempt_count"] == 0
     assert evidence[second["id"]]["windows"]["5m"] == {
         "attempt_count": 2,
         "amount_cents": 1000,
@@ -283,3 +292,7 @@ def test_distinct_concurrent_pix_for_same_payer_are_serialized():
     assert [item["prior_attempt_count"] for item in ordered] == [0, 1]
     assert [item["windows"]["5m"]["attempt_count"] for item in ordered] == [1, 2]
     assert [item["windows"]["5m"]["amount_cents"] for item in ordered] == [125, 250]
+    assert [item["counterparty"]["observation"] for item in ordered] == [
+        "insufficient_history",
+        "observed",
+    ]

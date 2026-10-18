@@ -67,6 +67,47 @@ O `metadata` público contém somente versão e motivo. O snapshot interno
 `pix-history-v1` registra contagens, somas em centavos, instante de admissão e
 códigos dos sinais acionados, sem documento, conta, IP ou geolocalização.
 
+### Contexto local de contraparte
+
+Para novas análises, o snapshot contém a seção interna `pix-counterparty-v1`.
+A contraparte é comparada pela composição exata de participante, agência, conta
+e documento do destinatário, sempre dentro do histórico da conta pagadora.
+Nenhum desses identificadores é copiado para o snapshot ou para o `metadata`
+público.
+
+O contexto usa três estados:
+
+- `insufficient_history`: o PIX SENTINEL ainda não observou tentativa anterior
+  do pagador e, portanto, não afirma que o destinatário seja novo;
+- `observed`: existe ao menos uma tentativa anterior do mesmo pagador para a
+  mesma contraparte;
+- `not_observed`: existe histórico anterior do pagador, mas nenhuma tentativa
+  anterior para a contraparte atual.
+
+A tentativa atual é sempre excluída da contagem de contraparte. Replays não
+criam observações nem alteram snapshots persistidos.
+
+### Avaliação de uma política v2
+
+A política ativa continua sendo `mvp-risk-experimental-v1`. Não foi ativada nem
+criada uma v2 porque usar contraparte conhecida para suprimir 2FA também pode
+facilitar repetição para um destinatário comprometido, enquanto usar contraparte
+não observada para escalar risco aumentaria fricção sem dados de calibração.
+As evidências versionadas deixam essa comparação possível em uma próxima
+revisão, sem recalcular análises antigas.
+
+| Intenção sintética | Contexto | Resultado v1 | Risco de erro observado |
+|---|---|---|---|
+| Primeira tentativa moderada | Histórico insuficiente | `approved` | Pode aprovar risco não visível no histórico local |
+| Transferência única de R$ 5.000 | Histórico insuficiente | `two_factor_required` | Possível fricção em transferência legítima |
+| Quarta tentativa pequena para a mesma contraparte | Observada | `two_factor_required` | Possível fricção em pagamentos legítimos repetidos |
+| Quarta tentativa pequena para destinatários diferentes | Não observada | `two_factor_required` | Contexto sugere dispersão, mas não prova fraude |
+| Oito tentativas e R$ 30.000 em 5 minutos | Observada ou não observada | `rejected` | Pode rejeitar uma rajada legítima; combinação continua experimental |
+
+Esses rótulos descrevem intenção de cenários sintéticos, não verdade sobre
+fraudes reais. Como nenhuma v2 foi adotada, não há alegação de redução de falso
+positivo ou falso negativo.
+
 ## Como rodar
 
 Uma instalação nova é inicializada por `database/database.sql`:
@@ -118,13 +159,16 @@ O Compose de testes usa banco, credenciais e portas próprias. Os dados do
 PostgreSQL ficam em `tmpfs`, sem reutilizar volumes de desenvolvimento.
 
 Validação local executada em Windows com Docker Desktop, API e PostgreSQL nos
-contêineres isolados: 138 testes aprovados, nenhuma falha ou skip. Uma medição
-E2E sequencial com 100 payloads sintéticos e pagadores distintos obteve:
+contêineres isolados: 141 testes aprovados, nenhuma falha ou skip. Medições E2E
+sequenciais comparáveis, cada uma com 100 payloads sintéticos e pagadores
+distintos, obtiveram:
 
-| Rota | p50 | p95 | p99 |
-|---|---:|---:|---:|
-| POST `/pix/transaction` | 75,18 ms | 111,65 ms | 148,35 ms |
-| GET `/pix/transaction/{id}` | 9,95 ms | 15,31 ms | 19,52 ms |
+| Versão | Rota | p50 | p95 | p99 |
+|---|---|---:|---:|---:|
+| Antes do contexto | POST `/pix/transaction` | 75,18 ms | 111,65 ms | 148,35 ms |
+| Com `pix-counterparty-v1` | POST `/pix/transaction` | 74,05 ms | 108,87 ms | 133,18 ms |
+| Antes do contexto | GET `/pix/transaction/{id}` | 9,95 ms | 15,31 ms | 19,52 ms |
+| Com `pix-counterparty-v1` | GET `/pix/transaction/{id}` | 9,84 ms | 14,36 ms | 22,82 ms |
 
 Esses números descrevem apenas o ambiente local de teste; não são benchmark de
 produção nem estimativa de capacidade sob concorrência.
@@ -172,8 +216,9 @@ curl http://localhost:3000/pix/transaction/pix-000123 \
 - O histórico contém somente tentativas válidas observadas pelo PIX SENTINEL.
 - `is_first_observed_attempt` não significa que o cliente nunca realizou Pix.
 - Contagens e somas representam tentativas, não operações liquidadas.
-- Não há reputação externa, perfil bancário cadastrado ou detecção enriquecida
-  de contraparte.
+- O contexto de contraparte é apenas histórico local observado; não representa
+  reputação externa nem prova que um destinatário seja legítimo ou fraudulento.
+- Não há perfil bancário cadastrado nem detecção enriquecida de contraparte.
 - Device, IP e geolocalização são declarados pelo payload e não autenticam o
   titular.
 - Os parâmetros são heurísticos e podem produzir falsos positivos ou falsos
