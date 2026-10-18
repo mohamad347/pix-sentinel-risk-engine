@@ -53,7 +53,7 @@ def test_revised_contextual_policy_is_explicit_test_only_opt_in(monkeypatch):
 
 def test_adaptive_v3_is_available_by_explicit_selection(monkeypatch):
     monkeypatch.setenv("APP_ENV", "test")
-    monkeypatch.setenv("PIX_RISK_POLICY", "mvp-risk-adaptive-v3-r5")
+    monkeypatch.setenv("PIX_RISK_POLICY", "mvp-risk-adaptive-v3-r6")
 
     policy = build_risk_policy()
 

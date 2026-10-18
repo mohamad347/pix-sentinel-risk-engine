@@ -155,7 +155,17 @@ def scenarios() -> list[dict]:
             "description": "R$ 5 mil em cold start",
             "expected": "two_factor_required",
             "amount": 500_000,
-            "override": cold,
+            "override": _merge(
+                cold,
+                {
+                    "contextual": {
+                        "account_context": {
+                            "source_account_age_days": 5,
+                            "is_self_transfer": False,
+                        }
+                    }
+                },
+            ),
         },
         {
             "id": "A03",
@@ -334,6 +344,119 @@ def scenarios() -> list[dict]:
                 }
             },
         },
+        {
+            "id": "A11",
+            "description": "desvio crítico isolado do perfil",
+            "expected": "two_factor_required",
+            "amount": 400_000,
+            "override": {},
+        },
+        {
+            "id": "A12",
+            "description": "desvio comportamental para novo destinatário",
+            "expected": "two_factor_required",
+            "amount": 150_000,
+            "override": {"counterparty": {"observation": "not_observed"}},
+        },
+        {
+            "id": "A13",
+            "description": "fan-out crítico isolado",
+            "expected": "two_factor_required",
+            "amount": 10_000,
+            "override": {
+                "contextual": {
+                    "relationship": {"distinct_counterparty_count_60m": 8}
+                }
+            },
+        },
+        {
+            "id": "A14",
+            "description": "fan-in crítico isolado",
+            "expected": "two_factor_required",
+            "amount": 10_000,
+            "override": {
+                "contextual": {
+                    "beneficiary": {
+                        "global_observation": "observed",
+                        "distinct_payer_count_60m": 5,
+                        "attempt_count_60m": 8,
+                        "destination_account_age_days": 365,
+                    }
+                }
+            },
+        },
+        {
+            "id": "A15",
+            "description": "device compartilhado por três pagadores PF",
+            "expected": "two_factor_required",
+            "amount": 10_000,
+            "override": {
+                "contextual": {
+                    "access": {"device_distinct_payer_count_60m": 3}
+                }
+            },
+        },
+        {
+            "id": "A16",
+            "description": "conta-laranja jovem em primeira observação",
+            "expected": "two_factor_required",
+            "amount": 300_000,
+            "override": {
+                "prior_attempt_count": 3,
+                "counterparty": {"observation": "not_observed"},
+                "contextual": {
+                    "profile": {
+                        "observation": "insufficient_history",
+                        "prior_attempt_count": 3,
+                        "history_span_seconds": 0,
+                        "median_amount_cents": None,
+                        "p90_amount_cents": None,
+                    },
+                    "beneficiary": {
+                        "global_observation": "not_observed",
+                        "distinct_payer_count_60m": 1,
+                        "attempt_count_60m": 1,
+                        "destination_account_age_days": 2,
+                    },
+                },
+            },
+        },
+        {
+            "id": "A17",
+            "description": "novo destinatário em valor habitual",
+            "expected": "approved",
+            "amount": 50_000,
+            "override": {"counterparty": {"observation": "not_observed"}},
+        },
+        {
+            "id": "A18",
+            "description": "conta jovem com valor abaixo do material",
+            "expected": "approved",
+            "amount": 100_000,
+            "override": {
+                "counterparty": {"observation": "not_observed"},
+                "contextual": {
+                    "beneficiary": {
+                        "global_observation": "not_observed",
+                        "distinct_payer_count_60m": 1,
+                        "attempt_count_60m": 1,
+                        "destination_account_age_days": 2,
+                    }
+                },
+            },
+        },
+        {
+            "id": "A19",
+            "description": "device corporativo compartilhado sem outro risco",
+            "expected": "approved",
+            "amount": 10_000,
+            "override": {
+                "contextual": {
+                    "access": {"device_distinct_payer_count_60m": 3},
+                    "party_types": {"payer": "pj", "payee": "pf"},
+                }
+            },
+        },
     ]
 
 
@@ -366,9 +489,14 @@ def run() -> dict:
                 ]
             if name == "v3":
                 row["v3_challenge"] = decision["metadata"].get("challenge")
+                row["v3_reason"] = decision["metadata"]["reason_code"]
+                row["v3_risk_factors"] = decision["metadata"].get(
+                    "risk_factors", []
+                )
         rows.append(row)
     return {
         "role": "synthetic_behavior_characterization_not_independent_holdout",
+        "current_policy_version": PixAdaptiveRiskPolicy().config.policy_version,
         "results": rows,
         "matches_intention": {
             name: sum(row[f"{name}_status"] == row["expected"] for row in rows)

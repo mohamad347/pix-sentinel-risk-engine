@@ -32,8 +32,8 @@ infraestrutura.
 | `src/resources/` | Traduz HTTP para chamadas de controller e define o status de sucesso. |
 | `src/schemas/` | Contém o JSON Schema da entrada do POST. |
 | `src/controllers/pix_transaction_controller.py` | Valida semântica, controla idempotência, lock, histórico, política, persistência e commit. |
-| `src/controllers/pix_adaptive_risk_policy.py` | Implementa a política padrão `mvp-risk-adaptive-v3-r5`. |
-| `src/controllers/pix_policy_selector.py` | Seleciona R5 por padrão; mantém V1 selecionável e V2/V2 R2 restritas a teste. |
+| `src/controllers/pix_adaptive_risk_policy.py` | Implementa a política padrão `mvp-risk-adaptive-v3-r6`. |
+| `src/controllers/pix_policy_selector.py` | Seleciona R6 por padrão; mantém V1 selecionável e V2/V2 R2 restritas a teste. |
 | `src/repositories/` | Executa locks, agregações históricas e operações SQLAlchemy. |
 | `src/models/` | Mapeia `pix_transactions` e `pix_analyses`. |
 | `src/dtos/` | Limita a saída pública a `key`, `status` e `metadata`. |
@@ -81,7 +81,7 @@ parecer.
 ## Política ativa
 
 A variável `PIX_RISK_POLICY` seleciona a política. Sem configuração explícita,
-a aplicação usa `mvp-risk-adaptive-v3-r5`, formada por 28 sinais agrupados em
+a aplicação usa `mvp-risk-adaptive-v3-r6`, formada por 28 sinais agrupados em
 seis famílias com teto próprio. O score é limitado a 100, mas rejeição não
 depende apenas dele: há salvaguardas para rajada crítica, viagem impossível com
 anomalia de acesso e convergência de múltiplas famílias. O README contém a
@@ -105,16 +105,17 @@ Matriz completa, com banco descartável e falha se houver teste pulado:
 docker compose -p pix-sentinel-tests -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from pix_test_runner
 ```
 
-O executor alterna R5, V1, V2 e V2 R2 e limpa o PostgreSQL entre as suítes. O
-resultado validado mais recente é `176 passed, 0 skipped`.
+O executor alterna R6, V1, V2 e V2 R2 e limpa o PostgreSQL entre as suítes. O
+resultado validado mais recente é `188 passed, 0 skipped`.
 
 ## Documentação mantida
 
 | Documento | Assunto |
 |---|---|
 | `como-o-projeto-e-organizado.md` | Camadas, responsabilidades e execução. |
-| `PIX_SENTINEL_RFC_v1 (1).md` | Decisões arquiteturais e de produto. |
-| `PIX_SENTINEL_ERD_v1 (1).md` | Modelo persistente e índices reais. |
-| `PIX_SENTINEL_FLUXOS_v1 (1).md` | Fluxos de POST, GET, decisão, replay e falha. |
-| `PIX_SENTINEL_ROTAS_v1 (2).md` | Contrato HTTP efetivamente implementado. |
+| `PIX_SENTINEL_RFC_v1.md` | Decisões arquiteturais e de produto. |
+| `PIX_SENTINEL_ERD_v1.md` | Modelo persistente e índices reais. |
+| `PIX_SENTINEL_FLUXOS_v1.md` | Fluxos de POST, GET, decisão, replay e falha. |
+| `PIX_SENTINEL_ROTAS_v1.md` | Contrato HTTP efetivamente implementado. |
 | `PIX_SENTINEL_ESTATISTICAS_TEMPO_API.md` | Metodologia e resultados do benchmark local. |
+| `PIX_SENTINEL_SIMULACOES_ANTIFRAUDE.md` | Cenários executados, scores, fronteiras e parecer sobre a política. |

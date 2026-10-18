@@ -25,8 +25,8 @@ API_URL = "http://127.0.0.1:3000/health_check"
 
 SUITES = (
     (
-        "R5",
-        "mvp-risk-adaptive-v3-r5",
+        "R6",
+        "mvp-risk-adaptive-v3-r6",
         (
             "tests/unit",
             "tests/integration/test_healthcheck.py",

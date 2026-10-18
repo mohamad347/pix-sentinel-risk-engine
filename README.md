@@ -11,7 +11,7 @@ três pareceres: `approved`, `two_factor_required` ou `rejected`.
 Payload Pix → validação → histórico PostgreSQL → regras de risco → score → decisão
 ```
 
-A política vigente, `mvp-risk-adaptive-v3-r5`, combina 28 sinais em seis
+A política vigente, `mvp-risk-adaptive-v3-r6`, combina 28 sinais em seis
 famílias independentes: exposição/velocity, perfil, relacionamento, acesso,
 temporal e rede do recebedor. Cada família possui um teto para impedir que
 sinais correlacionados inflem o score. O resultado final é limitado a 100.
@@ -52,25 +52,25 @@ altos. Estruturação prevalece sobre o simples total elevado em 60 minutos.
 | `CRITICAL_BURST_5M` | Rajada crítica de contagem e valor | ≥ 8 tentativas e PF/indefinido ≥ R$ 30.000 ou PJ ≥ R$ 100.000 em 5 min; exposição 60 | A combinação representa risco imediato suficiente para rejeição. |
 | `FIRST_OBSERVED_YOUNG_SOURCE_ACCOUNT` | Cold start material em conta de origem recente | primeira observação local, conta com menos de 30 dias e PF/indefinido ≥ R$ 3.000 ou PJ ≥ R$ 10.000; perfil 15 e 2FA determinístico | Compensa a ausência de perfil sem chamar todo cliente novo de fraude. |
 | `ABOVE_PROFILE_P90` | Valor muito acima do percentil habitual | ≥ 2 × p90; eleva perfil para pelo menos 10 | Compara o Pix ao padrão individual, não apenas a um valor fixo. |
-| `CRITICAL_MEDIAN_DEVIATION` | Desvio extremo da mediana | ≥ 8 × mediana; define perfil em 15 | Identifica ruptura forte do comportamento habitual. |
+| `CRITICAL_MEDIAN_DEVIATION` | Desvio extremo da mediana | ≥ 8 × mediana; define perfil em 15 e exige 2FA | Identifica ruptura forte do comportamento habitual mesmo quando o score total ainda está abaixo de 25. |
 | `ELEVATED_MEDIAN_DEVIATION` | Desvio relevante da mediana | ≥ 3 × mediana; eleva perfil para pelo menos 10 | Sinaliza mudança de padrão sem rejeitar isoladamente. |
-| `NEW_COUNTERPARTY` | Destinatário novo para o pagador | ≥ 3 tentativas anteriores e contraparte não observada; eleva relacionamento para pelo menos 5 | Destinos novos têm menos confiança histórica. |
+| `NEW_COUNTERPARTY` | Destinatário novo para o pagador | ≥ 3 tentativas anteriores e contraparte não observada; relacionamento 5; com perfil ≥ 10 exige 2FA | Destinos novos têm menos confiança histórica e, junto de ruptura comportamental, representam possível engenharia social. |
 | `PAIR_REPETITION_15M` | Repetição do mesmo par | ≥ 5 tentativas em 15 min; eleva relacionamento para pelo menos 10 | Pode indicar retentativa automatizada ou coerção. |
-| `CRITICAL_FAN_OUT_60M` | Muitos destinatários diferentes | PF/indefinido ≥ 8; PJ ≥ 15 em 60 min; define relacionamento em 15 | Considera que folha e fornecedores tornam a dispersão mais comum em PJ. |
+| `CRITICAL_FAN_OUT_60M` | Muitos destinatários diferentes | PF/indefinido ≥ 8; PJ ≥ 15 em 60 min; relacionamento 15 e 2FA | Captura dispersão de saldo após possível tomada de conta, com tolerância maior para folha e fornecedores PJ. |
 | `ELEVATED_FAN_OUT_60M` | Diversidade elevada de destinatários | PF/indefinido ≥ 4; PJ ≥ 8, abaixo do crítico; relacionamento pelo menos 12 | Antecipa dispersão sem equiparar atividade empresarial à pessoal. |
 | `NEW_DEVICE` | Dispositivo não observado para o pagador | ≥ 3 tentativas anteriores; acesso +10 | É um indício de troca de posse ou tomada de conta. |
 | `NEW_IP` | IP não observado para o pagador | ≥ 3 tentativas anteriores; acesso +8 | Acrescenta contexto independente ao dispositivo. |
 | `CHANNEL_CHANGE` | Canal não observado para o pagador | ≥ 3 tentativas anteriores; acesso +5 | Mudança simultânea de canal reforça anomalia de acesso. |
 | `DEVICE_CHURN_60M` | Troca rápida de dispositivos | ≥ 3 dispositivos em 60 min; acesso pelo menos 15 | Sessões legítimas raramente alternam tantos dispositivos em uma hora. |
 | `IP_CHURN_60M` | Troca rápida de IPs | ≥ 3 IPs em 60 min; acesso pelo menos 12 | Pode indicar proxy, automação ou sequestro de sessão. |
-| `DEVICE_SHARED_ACROSS_PAYERS_60M` | Mesmo dispositivo em vários pagadores | ≥ 3 pagadores em 60 min; acesso pelo menos 15 | Identifica infraestrutura compartilhada por possível fraudador. |
+| `DEVICE_SHARED_ACROSS_PAYERS_60M` | Mesmo dispositivo em vários pagadores | ≥ 3 pagadores em 60 min; acesso 15; PF/indefinido exige 2FA, PJ exige também risco de perfil, relacionamento ou recebedor | Identifica infraestrutura compartilhada por possível fraudador sem penalizar isoladamente um terminal corporativo. |
 | `IP_SHARED_ACROSS_PAYERS_60M` | Mesmo IP em vários pagadores | ≥ 5 pagadores em 60 min; acesso pelo menos 8 | Ajuda a detectar origem coordenada sem bloquear redes compartilhadas isoladamente. |
 | `TRANSACTION_CLOCK_SKEW` | Horário declarado distante do recebimento | diferença ≥ 2 h; eleva temporal para pelo menos 8 | Detecta payload atrasado, adulterado ou reenviado. |
 | `UNUSUAL_NIGHTTIME` | Operação noturna fora do perfil | 20h–06h em `America/Sao_Paulo`, ≥ 5 amostras e histórico noturno ≤ 20%; eleva temporal para pelo menos 5 | Usa o período noturno de referência do Pix, mas só pontua quando ele foge do hábito do pagador. |
 | `ELEVATED_GEO_VELOCITY` | Deslocamento geográfico improvável | distância ≥ 100 km e velocidade de 300 a 1.000 km/h; eleva temporal para pelo menos 10 | Acrescenta fricção sem tratar viagem plausível como fraude. |
 | `IMPOSSIBLE_GEO_VELOCITY` | Deslocamento geográfico impossível | distância ≥ 100 km e velocidade > 1.000 km/h, ou em até 60 s; temporal 25 | Sugere uso simultâneo ou localização incompatível, mas não rejeita sozinho. |
 | `RECIPIENT_FIRST_SYSTEM_OBSERVATION` | Recebedor nunca visto pelo motor | primeira observação global; rede +5 | Um destino sem histórico local merece cautela moderada. |
-| `RECIPIENT_FAN_IN_60M` | Recebedor concentra muitos pagadores | recebedor PF/indefinido: ≥ 5 pagadores e ≥ 8 tentativas; PJ: ≥ 15 e ≥ 25 em 60 min; rede 15 | Reduz falso positivo em comércios PJ sem neutralizar concentração em conta pessoal. |
+| `RECIPIENT_FAN_IN_60M` | Recebedor concentra muitos pagadores | recebedor PF/indefinido: ≥ 5 pagadores e ≥ 8 tentativas; PJ: ≥ 15 e ≥ 25 em 60 min; rede 15 e 2FA | Detecta possível conta-laranja centralizadora, com limite maior para recebedores empresariais. |
 | `YOUNG_DESTINATION_ACCOUNT` | Conta recebedora recente recebe valor alto | idade de 0 a 6 dias e PF/indefinido ≥ R$ 3.000 ou PJ ≥ R$ 10.000; rede +5 | Contas novas de destino apresentam pouco histórico de confiança. |
 
 Tetos por família: exposição/velocity 60, perfil 15, relacionamento 15, acesso
@@ -101,11 +101,20 @@ As salvaguardas são avaliadas nesta ordem:
 | 2 | `IMPOSSIBLE_GEO_VELOCITY` e score de acesso ≥ 10 | `rejected` |
 | 3 | score total ≥ 60, pelo menos 4 famílias ativas e acesso ≥ 18 ou rede do recebedor ≥ 15 | `rejected` |
 | 4 | primeira observação local, conta de origem < 30 dias e valor material do segmento | `two_factor_required` |
-| 5 | acesso ≥ 18 junto de relacionamento ou rede do recebedor com risco | `two_factor_required` |
-| 6 | nenhuma salvaguarda anterior e score total ≥ 25 | `two_factor_required` |
-| 7 | nenhuma salvaguarda anterior e score total < 25 | `approved` |
+| 5 | `CRITICAL_MEDIAN_DEVIATION` com perfil histórico confiável | `two_factor_required` |
+| 6 | perfil ≥ 10 e `NEW_COUNTERPARTY` | `two_factor_required` |
+| 7 | recebedor novo no sistema, conta de destino jovem, relação nova e valor material | `two_factor_required` |
+| 8 | `RECIPIENT_FAN_IN_60M` | `two_factor_required` |
+| 9 | `CRITICAL_FAN_OUT_60M` | `two_factor_required` |
+| 10 | device em ≥ 3 pagadores; isoladamente para PF/indefinido, ou com outro contexto para PJ | `two_factor_required` |
+| 11 | acesso ≥ 18 junto de relacionamento ou rede do recebedor com risco | `two_factor_required` |
+| 12 | nenhuma salvaguarda anterior e score total ≥ 25 | `two_factor_required` |
+| 13 | nenhuma salvaguarda anterior e score total < 25 | `approved` |
 
-Essa quinta salvaguarda cobre o caso em que device e IP são novos e o destino
+As salvaguardas 5 a 10 não acrescentam pontos nem repetem o motor: elas
+reconhecem tipologias antifraude fortes entre sinais já calculados. Por isso um
+score 15 pode pedir 2FA, enquanto um sinal fraco isolado continua aprovado.
+A salvaguarda 11 cobre o caso em que device e IP são novos e o destino
 também é novo: o score é 23, mas a convergência de acesso e relacionamento pede
 confirmação em vez de aprovar silenciosamente. Uma velocidade impossível isolada,
 por exemplo, soma 25 e pede 2FA; para
@@ -127,6 +136,10 @@ do operador autorizado para o orquestrador bancário.
 O 2FA tem status `recommended`: sua execução e confirmação pertencem ao
 orquestrador bancário. `approved` não autoriza a liquidação e `rejected` não é
 prova de fraude.
+
+Para decisões com fricção ou rejeição, `metadata.risk_factors` contém apenas os
+códigos dos sinais que contribuíram. Score, valores, documentos, IPs e
+coordenadas permanecem restritos ao snapshot interno.
 
 ### Exemplo concreto de cálculo
 
@@ -156,11 +169,20 @@ O motor não soma livremente os dois sinais de exposição porque ambos descreve
 o mesmo fenômeno: concentração de risco transacional. Já acesso e relacionamento
 são evidências diferentes e entram separadamente no score.
 
+O limiar de 25 não é a única porta para 2FA. Se um PF com mediana histórica de
+R$ 100 envia R$ 900 para um destinatário novo, o perfil crítico vale 15 e o
+relacionamento novo vale 5: score 20. Mesmo abaixo de 25, a combinação descreve
+uma tipologia de engenharia social e ativa
+`ADAPTIVE_CRITICAL_PROFILE_VERIFICATION`. O resultado é 2FA, nunca rejeição.
+
 O racional completo, incluindo alternativas avaliadas, fórmula, salvaguardas e
 limitações, está na
-[RFC do motor antifraude](docs/PIX_SENTINEL_RFC_v1%20(1).md).
+[RFC do motor antifraude](docs/PIX_SENTINEL_RFC_v1.md).
 As medições reproduzíveis do endpoint de decisão estão em
 [Estatísticas de tempo da API Pix](docs/PIX_SENTINEL_ESTATISTICAS_TEMPO_API.md).
+Os resultados concretos de 19 situações, as fronteiras de rejeição e as
+ressalvas de calibração estão em
+[Simulações antifraude e validação das decisões](docs/PIX_SENTINEL_SIMULACOES_ANTIFRAUDE.md).
 
 ## Como rodar e testar
 
@@ -184,10 +206,10 @@ Pix usam o header `INTERNAL-TOKEN: default_token`:
 Executar apenas `python -m pytest -q` fora do Docker roda os testes unitários,
 mas pula as integrações que exigem API e PostgreSQL isolados. Além disso, uma
 instância da API só pode ter uma política ativa por vez. Por isso não seria
-correto testar expectativas de V1, V2 e R5 contra a mesma configuração.
+correto testar expectativas de V1, V2 e R6 contra a mesma configuração.
 
 O Compose resolve isso com uma matriz sequencial. O `pix_test_runner` inicia a
-API com R5, V1, V2 e V2 R2, executa somente os testes correspondentes e limpa o
+API com R6, V1, V2 e V2 R2, executa somente os testes correspondentes e limpa o
 PostgreSQL entre as etapas. O banco é descartável, nenhuma porta de teste é
 publicada na máquina e o executor falha se algum teste falhar **ou for pulado**.
 
@@ -209,7 +231,7 @@ Os argumentos garantem isolamento e um resultado confiável:
 Resultado validado:
 
 ```text
-176 passed, 0 skipped across all policy suites.
+188 passed, 0 skipped across all policy suites.
 ```
 
 Ao terminar, remova os contêineres e volumes descartáveis:

@@ -604,3 +604,187 @@ def test_new_device_ip_and_counterparty_require_verification_at_score_23():
     assert decision["metadata"]["reason_code"] == (
         "ADAPTIVE_ACCESS_RELATIONSHIP_VERIFICATION"
     )
+
+
+def test_critical_median_deviation_requires_verification_below_score_threshold():
+    decision = evaluate(400_000)
+    policy = decision["evidence_snapshot"]["policy"]
+
+    assert policy["risk_score"] == 15
+    assert "CRITICAL_MEDIAN_DEVIATION" in policy["triggered_signals"]
+    assert policy["critical_profile_verification_safeguard"] is True
+    assert decision["status"] == "two_factor_required"
+    assert decision["metadata"]["reason_code"] == (
+        "ADAPTIVE_CRITICAL_PROFILE_VERIFICATION"
+    )
+
+
+def test_behavioral_deviation_with_new_counterparty_requires_verification():
+    decision = evaluate(150_000, evidence(counterparty="not_observed"))
+    policy = decision["evidence_snapshot"]["policy"]
+
+    assert policy["risk_score"] == 15
+    assert {"ELEVATED_MEDIAN_DEVIATION", "NEW_COUNTERPARTY"} <= set(
+        policy["triggered_signals"]
+    )
+    assert policy["behavioral_relationship_verification_safeguard"] is True
+    assert decision["status"] == "two_factor_required"
+    assert decision["metadata"]["reason_code"] == (
+        "ADAPTIVE_BEHAVIORAL_RELATIONSHIP_VERIFICATION"
+    )
+
+
+def test_first_seen_young_recipient_with_new_relationship_requires_verification():
+    decision = evaluate(
+        300_000,
+        evidence(
+            counterparty="not_observed",
+            profile={
+                "observation": "insufficient_history",
+                "prior_attempt_count": 3,
+                "history_span_seconds": 0,
+                "median_amount_cents": None,
+                "p90_amount_cents": None,
+            },
+            beneficiary={
+                "global_observation": "not_observed",
+                "distinct_payer_count_60m": 1,
+                "attempt_count_60m": 1,
+                "destination_account_age_days": 2,
+            },
+        ),
+    )
+    policy = decision["evidence_snapshot"]["policy"]
+
+    assert policy["risk_score"] == 15
+    assert {
+        "NEW_COUNTERPARTY",
+        "RECIPIENT_FIRST_SYSTEM_OBSERVATION",
+        "YOUNG_DESTINATION_ACCOUNT",
+    } <= set(policy["triggered_signals"])
+    assert policy["early_mule_verification_safeguard"] is True
+    assert decision["status"] == "two_factor_required"
+    assert decision["metadata"]["reason_code"] == "ADAPTIVE_EARLY_MULE_VERIFICATION"
+
+
+def test_recipient_fan_in_alone_requires_verification():
+    decision = evaluate(
+        snapshot=evidence(
+            beneficiary={
+                "global_observation": "observed",
+                "distinct_payer_count_60m": 5,
+                "attempt_count_60m": 8,
+                "destination_account_age_days": 365,
+            }
+        )
+    )
+    policy = decision["evidence_snapshot"]["policy"]
+
+    assert policy["risk_score"] == 15
+    assert policy["recipient_fan_in_verification_safeguard"] is True
+    assert decision["status"] == "two_factor_required"
+    assert decision["metadata"]["reason_code"] == "ADAPTIVE_RECIPIENT_FAN_IN_VERIFICATION"
+
+
+def test_critical_fan_out_alone_requires_verification():
+    decision = evaluate(
+        snapshot=evidence(
+            relationship={
+                "prior_counterparty_attempt_count": 4,
+                "pair_attempt_count_15m": 1,
+                "distinct_counterparty_count_60m": 8,
+            }
+        )
+    )
+    policy = decision["evidence_snapshot"]["policy"]
+
+    assert policy["risk_score"] == 15
+    assert policy["critical_fan_out_verification_safeguard"] is True
+    assert decision["status"] == "two_factor_required"
+    assert decision["metadata"]["reason_code"] == "ADAPTIVE_CRITICAL_FAN_OUT_VERIFICATION"
+
+
+def test_shared_device_requires_verification_for_pf_but_not_by_itself_for_pj():
+    shared_access = {
+        "device_observation": "observed",
+        "ip_observation": "observed",
+        "channel_observation": "observed",
+        "distinct_device_count_60m": 1,
+        "distinct_ip_count_60m": 1,
+        "device_distinct_payer_count_60m": 3,
+        "ip_distinct_payer_count_60m": 1,
+    }
+    pf = evaluate(snapshot=evidence(access=shared_access))
+    pj = evaluate(
+        snapshot=evidence(
+            access=shared_access,
+            party_types={"payer": "pj", "payee": "pf"},
+        )
+    )
+
+    assert pf["evidence_snapshot"]["policy"][
+        "shared_device_verification_safeguard"
+    ] is True
+    assert pf["status"] == "two_factor_required"
+    assert pf["metadata"]["reason_code"] == "ADAPTIVE_SHARED_DEVICE_VERIFICATION"
+    assert pj["evidence_snapshot"]["policy"][
+        "shared_device_verification_safeguard"
+    ] is False
+    assert pj["status"] == "approved"
+
+
+def test_shared_device_and_new_counterparty_require_verification_for_pj():
+    decision = evaluate(
+        snapshot=evidence(
+            counterparty="not_observed",
+            access={
+                "device_observation": "observed",
+                "ip_observation": "observed",
+                "channel_observation": "observed",
+                "distinct_device_count_60m": 1,
+                "distinct_ip_count_60m": 1,
+                "device_distinct_payer_count_60m": 3,
+                "ip_distinct_payer_count_60m": 1,
+            },
+            party_types={"payer": "pj", "payee": "pf"},
+        )
+    )
+    policy = decision["evidence_snapshot"]["policy"]
+
+    assert policy["risk_score"] == 20
+    assert policy["shared_device_verification_safeguard"] is True
+    assert decision["status"] == "two_factor_required"
+    assert decision["metadata"]["reason_code"] == "ADAPTIVE_SHARED_DEVICE_VERIFICATION"
+
+
+def test_weak_recipient_novelty_controls_remain_approved():
+    new_counterparty = evaluate(50_000, evidence(counterparty="not_observed"))
+    young_but_small = evaluate(
+        100_000,
+        evidence(
+            counterparty="not_observed",
+            beneficiary={
+                "global_observation": "not_observed",
+                "distinct_payer_count_60m": 1,
+                "attempt_count_60m": 1,
+                "destination_account_age_days": 2,
+            },
+        ),
+    )
+
+    assert new_counterparty["evidence_snapshot"]["policy"]["risk_score"] == 5
+    assert new_counterparty["status"] == "approved"
+    assert young_but_small["evidence_snapshot"]["policy"]["risk_score"] == 10
+    assert young_but_small["status"] == "approved"
+
+
+def test_public_metadata_explains_friction_without_exposing_raw_evidence():
+    decision = evaluate(150_000, evidence(counterparty="not_observed"))
+
+    assert decision["metadata"]["risk_factors"] == [
+        "ELEVATED_MEDIAN_DEVIATION",
+        "NEW_COUNTERPARTY",
+    ]
+    assert "risk_score" not in decision["metadata"]
+    assert "evidence_snapshot" not in decision["metadata"]
+    assert "risk_factors" not in evaluate()["metadata"]

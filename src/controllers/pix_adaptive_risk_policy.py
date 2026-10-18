@@ -6,7 +6,7 @@ from errors import RiskPolicyUnavailable
 from utils.pix_context import ADAPTIVE_CONTEXTUAL_EVIDENCE_SCHEMA_VERSION
 
 
-ADAPTIVE_POLICY_VERSION = "mvp-risk-adaptive-v3-r5"
+ADAPTIVE_POLICY_VERSION = "mvp-risk-adaptive-v3-r6"
 ADAPTIVE_HISTORY_WINDOWS_MINUTES = (1, 5, 15, 60, 1440)
 
 
@@ -207,6 +207,32 @@ class PixAdaptiveRiskPolicy:
         cold_start_verification_safeguard = (
             "FIRST_OBSERVED_YOUNG_SOURCE_ACCOUNT" in profile_signals
         )
+        critical_profile_verification_safeguard = (
+            "CRITICAL_MEDIAN_DEVIATION" in profile_signals
+        )
+        behavioral_relationship_verification_safeguard = (
+            profile >= 10 and "NEW_COUNTERPARTY" in relationship_signals
+        )
+        early_mule_verification_safeguard = all(
+            (
+                "NEW_COUNTERPARTY" in relationship_signals,
+                "RECIPIENT_FIRST_SYSTEM_OBSERVATION" in beneficiary_signals,
+                "YOUNG_DESTINATION_ACCOUNT" in beneficiary_signals,
+            )
+        )
+        recipient_fan_in_verification_safeguard = (
+            "RECIPIENT_FAN_IN_60M" in beneficiary_signals
+        )
+        critical_fan_out_verification_safeguard = (
+            "CRITICAL_FAN_OUT_60M" in relationship_signals
+        )
+        shared_device_detected = "DEVICE_SHARED_ACROSS_PAYERS_60M" in access_signals
+        shared_device_verification_safeguard = shared_device_detected and (
+            party_types["payer"] != "pj"
+            or profile > 0
+            or relationship > 0
+            or beneficiary > 0
+        )
         access_relationship_verification_safeguard = (
             access >= 18 and (relationship > 0 or beneficiary > 0)
         )
@@ -239,6 +265,30 @@ class PixAdaptiveRiskPolicy:
             status = "two_factor_required"
             reason_code = "ADAPTIVE_COLD_START_VERIFICATION"
             reason_description = "A material first observation from a recently opened source account requires verification."
+        elif critical_profile_verification_safeguard:
+            status = "two_factor_required"
+            reason_code = "ADAPTIVE_CRITICAL_PROFILE_VERIFICATION"
+            reason_description = "A critical deviation from the established payment profile requires verification."
+        elif behavioral_relationship_verification_safeguard:
+            status = "two_factor_required"
+            reason_code = "ADAPTIVE_BEHAVIORAL_RELATIONSHIP_VERIFICATION"
+            reason_description = "A behavioral deviation to a new counterparty requires verification."
+        elif early_mule_verification_safeguard:
+            status = "two_factor_required"
+            reason_code = "ADAPTIVE_EARLY_MULE_VERIFICATION"
+            reason_description = "A material transfer to a young, first-seen recipient requires verification."
+        elif recipient_fan_in_verification_safeguard:
+            status = "two_factor_required"
+            reason_code = "ADAPTIVE_RECIPIENT_FAN_IN_VERIFICATION"
+            reason_description = "A recipient concentrating attempts from several payers requires verification."
+        elif critical_fan_out_verification_safeguard:
+            status = "two_factor_required"
+            reason_code = "ADAPTIVE_CRITICAL_FAN_OUT_VERIFICATION"
+            reason_description = "A critical dispersion across recipients requires verification."
+        elif shared_device_verification_safeguard:
+            status = "two_factor_required"
+            reason_code = "ADAPTIVE_SHARED_DEVICE_VERIFICATION"
+            reason_description = "A device associated with several payers requires verification."
         elif access_relationship_verification_safeguard:
             status = "two_factor_required"
             reason_code = "ADAPTIVE_ACCESS_RELATIONSHIP_VERIFICATION"
@@ -262,6 +312,8 @@ class PixAdaptiveRiskPolicy:
             metadata["challenge"] = self._recommended_challenge(
                 families, party_types["payer"]
             )
+        if status != "approved":
+            metadata["risk_factors"] = triggered_signals
 
         decision_evidence = deepcopy(evidence_snapshot)
         decision_evidence["policy"] = {
@@ -280,6 +332,22 @@ class PixAdaptiveRiskPolicy:
             },
             "critical_burst_safeguard": critical_burst,
             "cold_start_verification_safeguard": cold_start_verification_safeguard,
+            "critical_profile_verification_safeguard": (
+                critical_profile_verification_safeguard
+            ),
+            "behavioral_relationship_verification_safeguard": (
+                behavioral_relationship_verification_safeguard
+            ),
+            "early_mule_verification_safeguard": early_mule_verification_safeguard,
+            "recipient_fan_in_verification_safeguard": (
+                recipient_fan_in_verification_safeguard
+            ),
+            "critical_fan_out_verification_safeguard": (
+                critical_fan_out_verification_safeguard
+            ),
+            "shared_device_verification_safeguard": (
+                shared_device_verification_safeguard
+            ),
             "access_relationship_verification_safeguard": (
                 access_relationship_verification_safeguard
             ),

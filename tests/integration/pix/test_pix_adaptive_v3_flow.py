@@ -16,8 +16,8 @@ DATABASE_NAME = make_url(DATABASE_URL).database if DATABASE_URL else ""
 INTEGRATION_ENABLED = os.environ.get("PIX_INTEGRATION_TESTS") == "1"
 SAFE_TEST_DATABASE = bool(DATABASE_NAME and "test" in DATABASE_NAME.lower())
 V3_ENABLED = os.environ.get(
-    "PIX_RISK_POLICY", "mvp-risk-adaptive-v3-r5"
-) == "mvp-risk-adaptive-v3-r5"
+    "PIX_RISK_POLICY", "mvp-risk-adaptive-v3-r6"
+) == "mvp-risk-adaptive-v3-r6"
 
 pytestmark = pytest.mark.skipif(
     not (INTEGRATION_ENABLED and SAFE_TEST_DATABASE and V3_ENABLED),
@@ -187,7 +187,7 @@ def test_v3_postgresql_multisignal_snapshot_and_profile_are_prior_only():
     assert evidence["policy"]["families"]["profile"] == 15
     assert evidence["policy"]["families"]["relationship"] == 5
     assert evidence["policy"]["families"]["access"] == 20
-    assert _stored(current_id).policy_version == "mvp-risk-adaptive-v3-r5"
+    assert _stored(current_id).policy_version == "mvp-risk-adaptive-v3-r6"
 
 
 def test_v3_recipient_fanin_includes_current_attempt_at_exact_boundary():
@@ -408,3 +408,152 @@ def test_v3_nighttime_profile_uses_america_sao_paulo_in_postgresql():
     assert response["status"] == "approved"
     assert evidence["contextual"]["temporal"]["nighttime_observation"] == "unusual"
     assert "UNUSUAL_NIGHTTIME" in evidence["policy"]["triggered_signals"]
+
+
+def test_v3_behavioral_outlier_to_new_recipient_requires_2fa_end_to_end():
+    payer = str(uuid4())
+    for sequence in range(5):
+        external_id = f"pix-v3-app-profile-{uuid4()}"
+        status_code, response = RequestGenerator.POST_pix_transaction(
+            _payload(
+                external_id,
+                payer,
+                10_000,
+                payee="habitual-app-recipient",
+                device="habitual-app-device",
+                payer_document="12345678909",
+            )
+        )
+        assert status_code == 200
+        assert response["status"] == "approved"
+        _age(external_id, 5 - sequence)
+
+    current_id = f"pix-v3-app-current-{uuid4()}"
+    status_code, response = RequestGenerator.POST_pix_transaction(
+        _payload(
+            current_id,
+            payer,
+            90_000,
+            payee=f"new-app-recipient-{uuid4()}",
+            device="habitual-app-device",
+            payer_document="12345678909",
+        )
+    )
+    evidence = _stored(current_id).evidence_snapshot
+    get_status, persisted = RequestGenerator.GET_pix_transaction(current_id)
+
+    assert status_code == get_status == 200
+    assert persisted == response
+    assert response["status"] == "two_factor_required"
+    assert response["metadata"]["reason_code"] == (
+        "ADAPTIVE_CRITICAL_PROFILE_VERIFICATION"
+    )
+    assert {
+        "ABOVE_PROFILE_P90",
+        "CRITICAL_MEDIAN_DEVIATION",
+        "NEW_COUNTERPARTY",
+    } <= set(response["metadata"]["risk_factors"])
+    assert evidence["policy"]["risk_score"] >= 20
+    assert evidence["policy"]["critical_profile_verification_safeguard"] is True
+
+
+def test_v3_first_seen_young_recipient_requires_2fa_end_to_end():
+    payer = str(uuid4())
+    for sequence in range(3):
+        external_id = f"pix-v3-mule-history-{uuid4()}"
+        status_code, response = RequestGenerator.POST_pix_transaction(
+            _payload(
+                external_id,
+                payer,
+                10_000,
+                payee="known-mule-control",
+                device="known-mule-device",
+                payer_document="12345678909",
+            )
+        )
+        assert status_code == 200
+        assert response["status"] == "approved"
+        _age(external_id, 4 - sequence)
+
+    current_id = f"pix-v3-mule-current-{uuid4()}"
+    current = _payload(
+        current_id,
+        payer,
+        300_000,
+        payee=f"young-mule-{uuid4()}",
+        device="known-mule-device",
+        payer_document="12345678909",
+        payee_document="98765432100",
+    )
+    current["destination_account"]["opening_date"] = (
+        datetime.now(timezone.utc) - timedelta(days=2)
+    ).isoformat()
+    status_code, response = RequestGenerator.POST_pix_transaction(current)
+    evidence = _stored(current_id).evidence_snapshot
+
+    assert status_code == 200
+    assert response["status"] == "two_factor_required"
+    assert response["metadata"]["reason_code"] == "ADAPTIVE_EARLY_MULE_VERIFICATION"
+    assert {
+        "NEW_COUNTERPARTY",
+        "RECIPIENT_FIRST_SYSTEM_OBSERVATION",
+        "YOUNG_DESTINATION_ACCOUNT",
+    } <= set(response["metadata"]["risk_factors"])
+    assert evidence["policy"]["risk_score"] >= 15
+    assert evidence["policy"]["early_mule_verification_safeguard"] is True
+
+
+def test_v3_shared_device_is_pf_friction_but_pj_control_remains_approved():
+    shared_device = f"shared-device-{uuid4()}"
+    payee = f"shared-device-payee-{uuid4()}"
+
+    for document in ("11122233344", "22233344455"):
+        status_code, response = RequestGenerator.POST_pix_transaction(
+            _payload(
+                f"pix-v3-shared-seed-{uuid4()}",
+                str(uuid4()),
+                10_000,
+                payee=payee,
+                device=shared_device,
+                payer_document=document,
+            )
+        )
+        assert status_code == 200
+        assert response["status"] == "approved"
+
+    pf_id = f"pix-v3-shared-pf-{uuid4()}"
+    pf_status, pf_response = RequestGenerator.POST_pix_transaction(
+        _payload(
+            pf_id,
+            str(uuid4()),
+            10_000,
+            payee=payee,
+            device=shared_device,
+            payer_document="33344455566",
+        )
+    )
+    pf_evidence = _stored(pf_id).evidence_snapshot
+
+    pj_id = f"pix-v3-shared-pj-{uuid4()}"
+    pj_status, pj_response = RequestGenerator.POST_pix_transaction(
+        _payload(
+            pj_id,
+            str(uuid4()),
+            10_000,
+            payee=payee,
+            device=shared_device,
+            payer_document="00123456000199",
+        )
+    )
+    pj_evidence = _stored(pj_id).evidence_snapshot
+
+    assert pf_status == pj_status == 200
+    assert pf_response["status"] == "two_factor_required"
+    assert pf_response["metadata"]["reason_code"] == (
+        "ADAPTIVE_SHARED_DEVICE_VERIFICATION"
+    )
+    assert pf_evidence["policy"]["families"]["access"] == 15
+    assert pf_evidence["policy"]["shared_device_verification_safeguard"] is True
+    assert pj_response["status"] == "approved"
+    assert pj_evidence["policy"]["families"]["access"] == 15
+    assert pj_evidence["policy"]["shared_device_verification_safeguard"] is False
